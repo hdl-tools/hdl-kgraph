@@ -162,11 +162,12 @@ does). On an RV32I SoC the offline saving is 97.9% over 84 RTL files, and on a
 39 KB toy design it correctly reports that the graph is *not worth it*.
 
 `bench agent` then checks that against reality by running the same tasks
-through Claude Code twice, with and without the MCP server. Measured live:
-**median 67.9% faster wall-clock** (8.5 s vs 26.4 s) and 63.7% fewer tokens —
-real, but well under the offline figure, because a live agent greps far more
-cleverly than any scripted baseline. The offline number is an upper bound, not
-a prediction, and the docs say so.
+through Claude Code twice, with and without the MCP server. Measured live over
+32 runs: **median 51.6% faster wall-clock** (14.4 s vs 29.9 s) and 46.8% fewer
+tokens — real, but half the offline figure, because a live agent greps far more
+cleverly than any scripted baseline. **Two of the four tasks lose**, including
+`port-map`, exactly as the offline run predicts. The offline number is an upper
+bound, not a prediction, and the docs say so.
 → [docs/benchmarks.md](docs/benchmarks.md)
 
 ## What gets extracted

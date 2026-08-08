@@ -449,45 +449,62 @@ Read the caveats before quoting any number from this tier:
 Reproduce with the exact task list that produced these numbers:
 
 ```bash
-hdl-kgraph bench agent --tasks docs/examples/agent-tasks.txt \
-                       --repeat 2 --model claude-opus-5 --max-turns 12
+hdl-kgraph bench agent --tasks docs/examples/agent-tasks.txt \\
+                       --repeat 4 --model claude-opus-5 --max-turns 12
 ```
 
-3 design questions x 2 repetitions x 2 arms = 12 runs, all valid, on the 84-file
-RTL corpus. Total spend **$2.44**.
-
-The three questions are in
-[docs/examples/agent-tasks.txt](examples/agent-tasks.txt), and that file states
-its own selection bias: all three are *scattered-answer* questions, the regime
-the graph is claimed to help with. There is deliberately no `port-map`-style
-question, which tier 1 shows is exactly where grep wins. **These numbers
-characterise the graph on the questions it is for, not on all questions.**
+4 design questions x 4 repetitions x 2 arms = **32 runs**, 30 valid, on the
+84-file RTL corpus. Total spend **$5.22**.
 
 | | graph | no-graph |
 |---|---|---|
-| median wall clock | **8 496 ms** | **26 422 ms** |
-| median billable tokens (in+out) | 671 | 1 849 |
-| median total context (in + cache create + cache read) | 17 487 | 63 714 |
-| median turns | 2.5 | 7.0 |
-| median cost | $0.070 | $0.231 |
+| median wall clock | **14 437 ms** | **29 855 ms** |
+| median billable tokens (in+out) | 1 126 | 2 115 |
+| median turns | 3 | 7 |
+| median cost | $0.080 | $0.150 |
 
-**Median time saving 67.9%; median token saving 63.7%.** Across all 12 runs the
-totals are 122.8 s versus 183.8 s — **61 s saved, 33.2%** — and total context
-238 694 versus 402 937 tokens (40.8%). Median and total diverge because of one
-task; see below.
+**Median time saving 51.6%; median token saving 46.8%.**
 
-Per task (median of 2 runs each):
+Per task, median of 4 repetitions:
 
-| task | graph wall | grep wall | graph $ | grep $ |
-|---|---|---|---|---|
-| who instantiates `cdc_2ff_sync` | 6 814 ms | 22 782 ms | $0.070 | $0.231 |
-| clock domains + crossings | 46 104 ms | 42 692 ms | $0.338 | $0.425 |
-| impact of changing `apb4_register_bank` | 8 496 ms | 26 422 ms | $0.036 | $0.121 |
+| task | graph wall | grep wall | time | graph tok | grep tok | tokens |
+|---|---|---|---|---|---|---|
+| who instantiates `cdc_2ff_sync` | 7 762 ms | 17 875 ms | **+56.6%** | 494 | 1 239 | +60.1% |
+| impact of changing `apb4_register_bank` | 8 748 ms | 33 684 ms | **+74.0%** | 683 | 2 287 | +70.1% |
+| clock domains + crossings | 46 685 ms | 32 125 ms | **-45.3%** | 3 318 | 2 475 | -34.1% |
+| ports/params of `apb4_register_bank` | 15 482 ms | 11 920 ms | **-29.9%** | 1 146 | 832 | -37.6% |
+
+**Two of four tasks lose.** That is the result, not a caveat buried under one.
+
+- `port-map` loses by 30% on wall clock and 38% on tokens — exactly what tier 1
+  predicts offline (-32.8%). The answer already lives in one file; fetching it
+  as structured JSON is more expensive than reading the declaration.
+- `clock-domains` loses by 45%, and gets *worse* with more samples (an earlier
+  3-task run measured -8%). The graph arm ran 4-8 tool calls over 10-14 turns
+  against the control's 7: having the graph invited it to explore. When an
+  answer is genuinely whole-design, the graph does not bound the work.
+
+**An earlier 3-task run reported 67.9%.** That set contained none of the
+questions grep wins. Adding one `port-map` task moved the headline from 67.9%
+to 51.6% — a 16-point swing from a single task. Treat any figure from this tier
+as a property of the task list first and the tool second.
+
+### Reliability: 2 of 16 graph runs lost their MCP server
+
+Two `who-instantiates` repetitions started with no connected `hdl-kgraph`
+server and answered by grepping. They are **excluded**, not counted: a graph
+run that never reached the graph is a control run wearing the wrong label, and
+counting it would have dragged the graph arm's cost toward the control's while
+looking like a legitimate sample.
+
+That is a ~12% transient failure rate on MCP server startup under repeated
+back-to-back spawns, worth knowing before wiring the server into a workflow.
+The `who-instantiates` medians above therefore rest on n=2, not n=4.
 
 ### Tier 1 overstates what a live agent actually saves
 
 This is the most important number in this document. Tier 1 puts the saving at
-**97.7%**; the live A/B measures **64–73%**. Tier 1 is not wrong, but it answers
+**97.7%**; the live A/B measures **47–52%**. Tier 1 is not wrong, but it answers
 a different question, and the gap is structural:
 
 - Tier 1's baseline reads **whole files** for every grep hit, because that is

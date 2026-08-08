@@ -40,10 +40,14 @@ the major version, and schema changes ship with a migration.
     falls back to grep and the comparison is a nullity dressed up as a result.
     Documents that no seed or temperature control exists — the output is a
     spread, not a measurement.
-  - Measured live on the validation SoC: median **67.9% faster wall clock**
-    and 63.7% fewer tokens, against tier 1's offline 97.7%. The docs now state
-    plainly that the offline figure is an **upper bound, not a prediction** — a
-    real agent greps far more selectively than any scripted baseline can.
+  - Measured live on the validation SoC over 32 runs: median **51.6% faster
+    wall clock** and 46.8% fewer tokens, against tier 1's offline 97.7%. Two of
+    the four tasks *lose* — `port-map` by 30% and the whole-design
+    `clock-domains` question by 45% — so the docs report the win as
+    question-shaped rather than uniform. The offline figure is documented as an
+    **upper bound, not a prediction**. Also records a ~12% transient MCP
+    server-startup failure rate observed under repeated back-to-back spawns;
+    those runs are excluded by the usage assertion rather than counted.
   - The exact task list behind the recorded live numbers ships as
     [docs/examples/agent-tasks.txt](docs/examples/agent-tasks.txt), so the A/B
     is reproducible from the repository rather than from a path in `/tmp`. The
