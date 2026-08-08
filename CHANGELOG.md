@@ -44,6 +44,17 @@ the major version, and schema changes ship with a migration.
   reports zero crossings. Separating them needs per-instance net identity, i.e.
   elaboration.
 
+### Changed
+
+- `clock_domains` now reports **where each domain's clock net is declared**
+  (`qualified_name`, `file`, `line`). Domains are keyed by alias-root but were
+  reported by name alone, so a design with several unrelated nets called `clk`
+  — a standalone module, an uninstantiated testbench — produced several entries
+  all headed `"clk"` with nothing to tell them apart. On the validation SoC that
+  turned four indistinguishable rows into `pll_rnm.out_clk_o`,
+  `rv32i_control.clk`, `rv32i_axi_arbiter.clk`, and `example_counter.clk`.
+  Additive: existing keys are unchanged.
+
 ### Added
 
 - `hdl-kgraph bench` command group: measures the savings claim `setup` seeds

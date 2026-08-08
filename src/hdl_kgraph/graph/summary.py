@@ -35,12 +35,34 @@ def jsonable(value: Any) -> Any:
     return value
 
 
+def _domain_scope(graph: nx.MultiDiGraph, clock_id: str) -> dict[str, Any]:
+    """Where a domain's clock net is declared.
+
+    Domains are keyed by alias-root, but reported by *name* — and a design
+    routinely has several unrelated nets called ``clk`` that were never
+    aliased together (a standalone module, an uninstantiated testbench). The
+    payload then showed four entries all headed ``"clk"`` with nothing to tell
+    them apart, which is unusable to a reader and to an assistant. Carry the
+    declaring scope so identically-named domains stay distinguishable.
+    """
+    data = graph.nodes.get(clock_id)
+    if not data:
+        return {"qualified_name": None, "file": None, "line": None}
+    span = data.get("line_span") or (None, None)
+    return {
+        "qualified_name": data.get("qualified_name") or None,
+        "file": data.get("file") or None,
+        "line": span[0],
+    }
+
+
 def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
     """The ``clock_domains`` tool payload: domains plus CDC suspects."""
     domains = [
         {
             "clock": d.clock_names[0] if d.clock_names else d.clock_id,
             "aliases": d.clock_names,
+            **_domain_scope(graph, d.clock_id),
             "process_count": len(d.process_ids),
             "signal_count": len(d.signal_ids),
             "min_confidence": d.min_confidence,

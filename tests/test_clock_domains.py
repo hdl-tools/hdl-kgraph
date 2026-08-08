@@ -142,3 +142,46 @@ def test_vhdl_clock_name_re(name: str, hit: bool) -> None:
     from hdl_kgraph.parser.vhdl import _CLOCK_NAME_RE
 
     assert bool(_CLOCK_NAME_RE.search(name)) is hit, name
+
+
+def test_clock_summary_reports_where_each_domain_is_declared(fixtures_dir: Path) -> None:
+    """Domains are keyed by alias-root but reported by *name*, and a design
+    routinely has several unrelated nets called ``clk`` that were never aliased
+    together. Without a declaring scope the payload shows several entries all
+    headed ``"clk"`` with nothing to tell them apart — unusable to a reader and
+    to an assistant."""
+    from hdl_kgraph.graph.summary import clock_summary
+
+    sv = SystemVerilogParser()
+    names = ["two_clock_cdc.sv", "simple_counter.sv", "dataflow.sv"]
+    graph = build_graph([sv.parse(Path(n), (fixtures_dir / n).read_text()) for n in names])
+    domains = clock_summary(graph)["domains"]
+    assert domains
+
+    for domain in domains:
+        assert set(domain) >= {"clock", "aliases", "qualified_name", "file", "line"}
+        # The scope must actually locate the net, not just be present.
+        assert domain["file"] in names
+        assert isinstance(domain["line"], int)
+        assert domain["qualified_name"]
+
+    # The property that matters: no two domains are indistinguishable.
+    identities = [(d["qualified_name"], d["file"]) for d in domains]
+    assert len(set(identities)) == len(identities), identities
+
+
+def test_clock_summary_scope_survives_a_missing_node(fixtures_dir: Path) -> None:
+    """A domain whose alias-root is absent from the graph must degrade to nulls
+    rather than raise — the summary is precomputed at build time and must never
+    be the thing that fails a build."""
+    from hdl_kgraph.graph.summary import _domain_scope
+
+    sv = SystemVerilogParser()
+    graph = build_graph(
+        [sv.parse(Path("two_clock_cdc.sv"), (fixtures_dir / "two_clock_cdc.sv").read_text())]
+    )
+    assert _domain_scope(graph, "no-such-node") == {
+        "qualified_name": None,
+        "file": None,
+        "line": None,
+    }
