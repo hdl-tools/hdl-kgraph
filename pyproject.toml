@@ -64,6 +64,11 @@ layout = ["numpy>=1.24", "scipy>=1.10"]
 # package, and only the VHDL backend needs it. Upper-bounded like the
 # tree-sitter stack: these are native/compiled wheels whose API can churn.
 enrich = ["pyslang>=8,<12", "pyVHDLModel>=0.28,<1"]
+# Exact token counts for `bench context --tokenizer tiktoken`. Optional: the
+# default heuristic estimator needs nothing, and since the same estimator
+# prices both arms, the savings *ratio* barely moves — this buys accuracy in
+# the absolute numbers, not a different conclusion.
+bench = ["tiktoken>=0.7"]
 # v2 graph-layer spike (M12, #128) — evaluation-only, used solely by
 # scripts/spike_m12.py to measure candidate graph backends, never by the package
 # or the test suite. rustworkx and kuzu are native/compiled wheels, so they are
@@ -75,7 +80,7 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.10",
 ]
-all = ["hdl-kgraph[watch,mcp,layout,enrich]"]
+all = ["hdl-kgraph[watch,mcp,layout,enrich,bench]"]
 
 [project.scripts]
 hdl-kgraph = "hdl_kgraph.cli.main:main"
@@ -121,6 +126,7 @@ module = [
   "tomli.*",
   "watchdog.*",
   "fastmcp.*",
+  "tiktoken.*",
   "pyVHDLModel.*",
   "pyGHDL.*",
 ]

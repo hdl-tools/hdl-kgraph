@@ -150,6 +150,26 @@ builds. `bench-link` quantifies incremental-link locality (what fraction of
 references a typical edit re-resolves), the metric behind the bounded linker.
 → [docs/review.md](docs/review.md)
 
+**Check the claim yourself.** `hdl-kgraph bench` measures what that
+"query the graph instead of grepping" advice is actually worth *on your
+design*, rather than asking you to take it on faith. `bench context` prices
+each question both ways — the graph's JSON envelope against the grep output
+plus the files a no-graph agent would read — and `bench fidelity` compares
+both against hand-written ground truth. The baseline searches only the files
+the graph indexed, caps and flags its own reads, prints every command it ran,
+and reports the questions where **grep wins** (`port-map` on hand-written RTL
+does). On an RV32I SoC the offline saving is 97.9% over 84 RTL files, and on a
+39 KB toy design it correctly reports that the graph is *not worth it*.
+
+`bench agent` then checks that against reality by running the same tasks
+through Claude Code twice, with and without the MCP server. Measured live over
+32 runs: **median 51.6% faster wall-clock** (14.4 s vs 29.9 s) and 46.8% fewer
+tokens — real, but half the offline figure, because a live agent greps far more
+cleverly than any scripted baseline. **Two of the four tasks lose**, including
+`port-map`, exactly as the offline run predicts. The offline number is an upper
+bound, not a prediction, and the docs say so.
+→ [docs/benchmarks.md](docs/benchmarks.md)
+
 ## What gets extracted
 
 - **Design units:** modules, interfaces, packages, programs; VHDL entities,

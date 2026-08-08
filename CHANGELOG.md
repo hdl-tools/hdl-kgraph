@@ -11,16 +11,99 @@ the major version, and schema changes ship with a migration.
 
 ### Fixed
 
-- **Absolute file-ref paths now resolve (#164).** Tcl-flow (`read_verilog`/
-  `analyze`/`source`/…) and Perl (`open(...)`) references written as an
-  **absolute** path that points inside the analyzed tree previously always
-  degraded to an `unresolved:file:` stub, since `FILE` nodes live in a
-  build-root-relative keyspace. The pass-2 linker now threads the build root and
-  canonicalizes an in-tree absolute target onto that keyspace before lookup, so
-  it binds to the real `FILE` node. Out-of-tree absolutes (and
-  `$var`-interpolated paths) are unchanged — still unresolved.
+- **Resets with a port suffix were classified as clocks.** The reset-name
+  pattern anchored `$` immediately after the optional polarity, so `rst_n`
+  matched but `rst_n_i` did not — and `_i`/`_o` port suffixes are a common
+  convention. With no term in `@(posedge clk_i or negedge rst_n_i)` recognised
+  as a reset, both terms fell through to the ambiguous-sensitivity branch and
+  were emitted as low-confidence `CLOCKED_BY`. The process then had two clock
+  domains, `graph.clocks` skipped it as ambiguous, and it joined no domain at
+  all. On the validation SoC that corrupted 34 of 130 `CLOCKED_BY` edges (26%),
+  silently dropped 17 processes, and listed reset nets among the clock domains.
+  The affected processes were precisely the CDC logic — the `apb_cdc_bridge`
+  master/slave sides and the `cdc_gray_fifo` write/read sides — so the failure
+  landed exactly where clock crossings live.
+
+  The pattern now accepts trailing polarity and qualifier segments
+  (`rst_n_i`, `rst_ni`, `wr_rst_n_i`, `m_rst_sync_n`, `areset_n`, `clear_i`).
+  Those segments are a **whitelist**, not `.*`, so the #76 rejections
+  (`rst_count`, `reset_value`, `clear_count`) still hold. The SystemVerilog and
+  VHDL backends held identical private copies; they now share one
+  `parser.base.RESET_NAME_RE` and a test pins that they cannot drift apart.
+
+  After the fix on the same design: ambiguous-sensitivity edges 34 → **0**,
+  multi-domain processes 17 → **0**, reset nets among the clock domains 5 →
+  **none**, `RESETS` edges 83 → 110, and the largest domain's minimum
+  confidence 0.4 → 0.6.
+
+- Documented a **known CDC false negative** that this fix does *not* address
+  (`graph/clocks.py`): because aliasing is name-level, a module has one node
+  per formal port shared by all its instances, so instantiating it twice with
+  swapped clocks unions those clocks into one domain. A dual-clock FIFO wired
+  `.wr_clk_i(a)/.rd_clk_i(b)` in one instance and swapped in another therefore
+  reports zero crossings. Separating them needs per-instance net identity, i.e.
+  elaboration.
+
+### Changed
+
+- `clock_domains` now reports **where each domain's clock net is declared**
+  (`qualified_name`, `file`, `line`). Domains are keyed by alias-root but were
+  reported by name alone, so a design with several unrelated nets called `clk`
+  — a standalone module, an uninstantiated testbench — produced several entries
+  all headed `"clk"` with nothing to tell them apart. On the validation SoC that
+  turned four indistinguishable rows into `pll_rnm.out_clk_o`,
+  `rv32i_control.clk`, `rv32i_axi_arbiter.clk`, and `example_counter.clk`.
+  Additive: existing keys are unchanged.
 
 ### Added
+
+- `hdl-kgraph bench` command group: measures the savings claim `setup` seeds
+  into every assistant's instruction file, against the user's own design.
+  - `bench context` prices each design question twice — the graph's JSON
+    envelope versus the grep output plus the files a no-graph agent would have
+    to read — and reports median *and* aggregate savings, per-question rows,
+    latency, and the read-everything token ceiling. Questions are derived from
+    the graph deterministically, so it runs on any design and two runs give
+    identical numbers. The baseline is deliberately constrained and
+    self-documenting: it searches only the files the graph indexed, caps its
+    reads (`--baseline-max-files`, flagged when the cap binds), prints every
+    command it ran, reports the questions where grep is *cheaper*, and excludes
+    any row whose graph answer was empty from the headline. `--fail-under`
+    exits 1 on a missed target for CI gating; `--tokenizer tiktoken` (new
+    optional `bench` extra) replaces the default `chars/4` estimator with exact
+    counts.
+  - `bench fidelity` compares graph and grep answers against hand-authored
+    ground truth over a bundled suite covering a macro-hidden instantiation, a
+    comment/string false positive, a VHDL case-insensitive name, and one case
+    grep answers correctly. `--suite PATH` runs your own cases.
+  - `bench agent` runs an opt-in live Claude Code A/B (one MCP server versus
+    none) and reports the CLI's own token usage and wall clock. Isolates both
+    arms identically, and asserts per run that they genuinely differed: the
+    graph arm must have *called* a graph tool (a connected server proves the
+    plumbing, not the usage) and the control arm must have called none. Both
+    checks are load-bearing — `--permission-mode dontAsk` auto-denies an
+    unlisted MCP tool, so without an explicit allow rule the graph arm silently
+    falls back to grep and the comparison is a nullity dressed up as a result.
+    Documents that no seed or temperature control exists — the output is a
+    spread, not a measurement.
+  - Measured live on the validation SoC over 32 runs: median **51.6% faster
+    wall clock** and 46.8% fewer tokens, against tier 1's offline 97.7%. Two of
+    the four tasks *lose* — `port-map` by 30% and the whole-design
+    `clock-domains` question by 45% — so the docs report the win as
+    question-shaped rather than uniform. The offline figure is documented as an
+    **upper bound, not a prediction**. Also records a ~12% transient MCP
+    server-startup failure rate observed under repeated back-to-back spawns;
+    those runs are excluded by the usage assertion rather than counted.
+  - The exact task list behind the recorded live numbers ships as
+    [docs/examples/agent-tasks.txt](docs/examples/agent-tasks.txt), so the A/B
+    is reproducible from the repository rather than from a path in `/tmp`. The
+    file documents its own selection bias: every task is a scattered-answer
+    question, with no `port-map`-style question, which is the shape tier 1
+    shows grep winning.
+  - See [docs/benchmarks.md](docs/benchmarks.md).
+- `SqliteStore.load_file_metas()`: the stored per-file records without
+  hydrating the graph, so a caller needing only the source inventory does not
+  pay for a whole-graph `load()`.
 
 - **SLN scenario scanning (M10 — final wedge).** `.sln` Cadence Perspec System
   Level Notation (the `e`/Specman dialect: `<' … '>`, `extend <unit>`,
@@ -98,6 +181,16 @@ the major version, and schema changes ship with a migration.
   already existed). UPF, Tcl flow scripts, Perl, and SLN remain fail-loud stubs.
   See docs/extraction.md.
 
+### Fixed
+
+- **Absolute file-ref paths now resolve (#164).** Tcl-flow (`read_verilog`/
+  `analyze`/`source`/…) and Perl (`open(...)`) references written as an
+  **absolute** path that points inside the analyzed tree previously always
+  degraded to an `unresolved:file:` stub, since `FILE` nodes live in a
+  build-root-relative keyspace. The pass-2 linker now threads the build root and
+  canonicalizes an in-tree absolute target onto that keyspace before lookup, so
+  it binds to the real `FILE` node. Out-of-tree absolutes (and
+  `$var`-interpolated paths) are unchanged — still unresolved.
 ## [2.4.0] - 2026-06-23
 
 ### Added

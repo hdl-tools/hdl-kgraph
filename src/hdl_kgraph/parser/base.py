@@ -17,6 +17,7 @@ project risk) is isolated here, and M7 adds elaboration-accurate backends
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,29 @@ ScopeT = TypeVar("ScopeT")
 #: Per-file cap on recorded parse-error *details*; ``parse_error_count``
 #: stays exact beyond it (a garbage/minified file must not bloat the store).
 MAX_PARSE_ERRORS = 20
+
+#: Whether a net name looks like a reset. Shared by the SystemVerilog and VHDL
+#: backends so the two cannot drift (they held identical private copies).
+#:
+#: The reset token may be followed by polarity and qualifier segments —
+#: `rst_n_i`, `rst_ni`, `wr_rst_n_i`, `m_rst_sync_n` are all resets. An earlier
+#: pattern anchored `$` immediately after the optional polarity, so any further
+#: suffix defeated it; since `_i`/`_o` port suffixes are a common convention,
+#: that silently misclassified a design's resets as *clocks*. With no term in
+#: `@(posedge clk_i or negedge rst_n_i)` recognised as a reset, both terms fell
+#: through to the ambiguous-sensitivity branch and were emitted as
+#: low-confidence CLOCKED_BY; the process then had two clock domains,
+#: :mod:`hdl_kgraph.graph.clocks` skipped it as ambiguous, and CDC detection
+#: went blind on exactly the modules where clock crossings live.
+#:
+#: The trailing segments are a **whitelist**, not `.*`, which is what keeps
+#: `rst_count`, `reset_value`, and `clear_count` out: those are data signals
+#: named after a reset, not resets. `restart`, `wrist_data`, `crystal_en`, and
+#: `color_reg` are excluded by the leading `(?:^|_)` token boundary.
+RESET_NAME_RE = re.compile(
+    r"(?:^|_)(?:a?rst|a?reset|clr|clear)(?:_?[nb]i?)?(?:_(?:sync|async|n|b|i|o|in|out))*$",
+    re.IGNORECASE,
+)
 
 
 class GrammarMismatchError(RuntimeError):

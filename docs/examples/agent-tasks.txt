@@ -1,0 +1,27 @@
+# Task list for `hdl-kgraph bench agent` — the exact three questions behind the
+# live A/B numbers recorded in docs/benchmarks.md ("Recorded results (live)").
+#
+# Format: one task prompt per line. Blank lines and `#` comments are ignored.
+#
+# These are written against the RV32I + GPU-lite SoC used for validation, so
+# the module names below are specific to it. Swap them for names from your own
+# design — `hdl-kgraph bench context` prints good candidates (it derives the
+# most-instantiated modules and most-driven signals from your graph).
+#
+# Two things to know before reading the recorded results as a general claim:
+#
+# 1. THE SET IS DELIBERATELY MIXED. The first three are *scattered-answer*
+#    questions — the regime the graph is claimed to help with. The fourth is a
+#    `port-map` question, included on purpose because tier 1 measures that as
+#    the shape where grep WINS (-32.8% on this corpus). A task list that
+#    contained only the first three would demonstrate the tool rather than
+#    characterise it, and would report a higher headline than it deserves.
+#
+# 2. "Answer concisely" is not decoration. Without it both arms pad their
+#    output and the token comparison drifts toward measuring verbosity. It is
+#    applied identically to both arms, so it does not favour either.
+
+Which design units instantiate the module cdc_2ff_sync? List each parent module and the file it is in. Answer concisely.
+What are the clock domains in this design, and which signals cross between them? Answer concisely.
+If I change the module apb4_register_bank, which other design units are affected? List them. Answer concisely.
+What are the ports and parameters of the module apb4_register_bank? List them in declaration order with direction and width. Answer concisely.

@@ -24,7 +24,7 @@ from hdl_kgraph.cli.analyze import (
     tree,
     visualize,
 )
-from hdl_kgraph.cli.bench import bench_link
+from hdl_kgraph.cli.bench import bench, bench_link
 from hdl_kgraph.cli.build import build, update, watch
 from hdl_kgraph.cli.merge import merge
 from hdl_kgraph.cli.query import query
@@ -59,6 +59,7 @@ for _cmd in (
     status,
     review,
     bench_link,
+    bench,
     discrepancies,
     enriched,
     lint_cmd,

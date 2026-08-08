@@ -1,0 +1,55 @@
+# Fidelity cases: hand-authored ground truth for questions where a
+# line-oriented search and a resolved graph disagree.
+#
+# Every `expect` / `forbid` list below was written by a human reading the
+# sources in this directory, NOT taken from the graph's own output — otherwise
+# the graph would be scoring its own homework. The cases deliberately include
+# one (`plain-instantiation`) that grep answers perfectly.
+#
+# `tool` is always `who-instantiates`: one answer shape (the set of design
+# units that instantiate the target) keeps both arms directly comparable.
+
+[[case]]
+name = "macro-hidden-instantiation"
+target = "fifo"
+expect = ["macro_top", "plain_top"]
+forbid = []
+why = """
+`macro_top` instantiates fifo through `MAKE_FIFO(u_fifo)`. The token "fifo"
+never appears at the call site, and `_` is a word character, so no \\bfifo\\b
+search matches `MAKE_FIFO`. Grep reports a false negative; the preprocessor
+expansion is invisible to it."""
+
+[[case]]
+name = "comment-and-string-false-positive"
+target = "sram_ctrl"
+expect = []
+forbid = ["commented"]
+why = """
+Nothing in this design instantiates `sram_ctrl` — the correct answer is the
+empty set. `commented` names it once in a TODO comment and once inside a
+$display string, so grep reports `commented` as an instantiation site. The
+graph records an INSTANTIATES edge only for a real instantiation, so it
+answers "nowhere"."""
+
+[[case]]
+name = "vhdl-case-insensitive-name"
+target = "ALU"
+expect = ["vhdl_user"]
+forbid = []
+why = """
+VHDL identifiers are case-insensitive, so the entity written `alu` is legally
+named ALU. A case-sensitive search for "ALU" — the spelling used in a spec or
+a review comment — matches nothing at all."""
+
+[[case]]
+name = "ambiguous-duplicate-definition"
+target = "dual_leaf"
+expect = ["dup_top"]
+forbid = []
+why = """
+The case grep gets RIGHT, kept so the suite is not a list of rigged wins:
+the instantiation is fully spelled, and a careful reader of the grep output
+recovers `dup_top` exactly. What grep still cannot tell you is that
+`dual_leaf` has two different definitions and this edge is therefore
+unsafe — the graph resolves it at confidence 0.6 to say so."""
