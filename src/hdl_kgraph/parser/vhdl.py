@@ -63,6 +63,7 @@ from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
 from hdl_kgraph.parser.base import (
+    RESET_NAME_RE,
     FileIR,
     UnresolvedRef,
     _WalkerBase,
@@ -89,7 +90,6 @@ DEFAULT_LIBRARY = "work"
 # suffix) so control names like ``rst``/``rst_n``/``sys_clk`` match but data names
 # that merely contain the substring (``clear_count``, ``reset_value``,
 # ``restart_addr``) do not. See issue #76.
-_RESET_NAME_RE = re.compile(r"(?:^|_)(?:rst|reset|clr|clear)(?:_?n|_?b)?$", re.IGNORECASE)
 _CLOCK_NAME_RE = re.compile(r"(?:^|_)(?:clk|clock)(?:_?n|_?b)?$", re.IGNORECASE)
 
 
@@ -513,7 +513,7 @@ class _Walker(_WalkerBase[_Scope]):
                 )
         reads = {name for kind, name in emitted if kind is EdgeKind.READS}
         for name in sorted(reads | set(sensitivity)):
-            if _RESET_NAME_RE.search(name) and name not in clock_names:
+            if RESET_NAME_RE.search(name) and name not in clock_names:
                 emit(
                     EdgeKind.RESETS,
                     name,

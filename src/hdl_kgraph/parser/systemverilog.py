@@ -56,7 +56,6 @@ Implementation notes:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +67,7 @@ from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
 from hdl_kgraph.parser.base import (
+    RESET_NAME_RE,
     FileIR,
     UnresolvedRef,
     _WalkerBase,
@@ -115,7 +115,6 @@ _ASSIGNMENT_TYPES = frozenset({"nonblocking_assignment", "operator_assignment", 
 # suffix) so a control name like ``rst``/``rst_n``/``sys_rst`` matches but a data
 # name that merely contains the substring (``clear_count``, ``reset_value``,
 # ``restart_addr``) does not. See issue #76.
-_RESET_NAME_RE = re.compile(r"(?:^|_)(?:rst|reset|clr|clear)(?:_?n|_?b)?$", re.IGNORECASE)
 
 _ASSERT_STATEMENT_TYPES = {
     "assert_property_statement": "assert",
@@ -930,7 +929,7 @@ class _Walker(_WalkerBase[_Scope]):
                 edge=term["edge"],
             )
             return True, set()
-        resets = [t for t in edge_terms if _RESET_NAME_RE.search(str(t["name"]))]
+        resets = [t for t in edge_terms if RESET_NAME_RE.search(str(t["name"]))]
         others = [t for t in edge_terms if t not in resets]
         reset_names = {str(t["name"]) for t in resets}
         for term in resets:
@@ -999,7 +998,7 @@ class _Walker(_WalkerBase[_Scope]):
         if clocked:
             # Sync-reset heuristic: a reset-named signal read by a clocked block.
             for name in sorted(reads - async_resets):
-                if _RESET_NAME_RE.search(name):
+                if RESET_NAME_RE.search(name):
                     self._dataflow_ref(
                         EdgeKind.RESETS,
                         proc.id,

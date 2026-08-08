@@ -103,21 +103,27 @@ def test_reset_tree_groups_by_net(graph) -> None:
     ],
 )
 def test_reset_name_re_matches_control_names(name: str) -> None:
-    from hdl_kgraph.parser.systemverilog import _RESET_NAME_RE
+    from hdl_kgraph.parser.base import RESET_NAME_RE
 
-    assert _RESET_NAME_RE.search(name), name
+    assert RESET_NAME_RE.search(name), name
 
 
 @pytest.mark.parametrize(
     "name", ["clear_count", "reset_value", "restart_addr", "cluster", "data", "rst_count"]
 )
 def test_reset_name_re_rejects_data_names(name: str) -> None:
-    from hdl_kgraph.parser.systemverilog import _RESET_NAME_RE
-    from hdl_kgraph.parser.vhdl import _RESET_NAME_RE as VHDL_RESET_RE
+    from hdl_kgraph.parser.base import RESET_NAME_RE
+    from hdl_kgraph.parser.systemverilog import RESET_NAME_RE as SV_RESET_RE
+    from hdl_kgraph.parser.vhdl import RESET_NAME_RE as VHDL_RESET_RE
 
-    # The substring patterns used to misfire on these data names (#76).
-    assert not _RESET_NAME_RE.search(name), name
-    assert not VHDL_RESET_RE.search(name), name
+    # The substring patterns used to misfire on these data names (#76). The
+    # pattern now accepts trailing qualifiers so that `rst_n_i` reads as a
+    # reset, but those qualifiers are a whitelist rather than `.*` — precisely
+    # so these stay rejected. Both backends share one object, so they cannot
+    # drift back apart.
+    assert not RESET_NAME_RE.search(name), name
+    assert SV_RESET_RE is RESET_NAME_RE
+    assert VHDL_RESET_RE is RESET_NAME_RE
 
 
 @pytest.mark.parametrize(
