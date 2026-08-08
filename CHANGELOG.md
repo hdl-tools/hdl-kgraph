@@ -44,6 +44,12 @@ the major version, and schema changes ship with a migration.
     and 63.7% fewer tokens, against tier 1's offline 97.7%. The docs now state
     plainly that the offline figure is an **upper bound, not a prediction** — a
     real agent greps far more selectively than any scripted baseline can.
+  - The exact task list behind the recorded live numbers ships as
+    [docs/examples/agent-tasks.txt](docs/examples/agent-tasks.txt), so the A/B
+    is reproducible from the repository rather than from a path in `/tmp`. The
+    file documents its own selection bias: every task is a scattered-answer
+    question, with no `port-map`-style question, which is the shape tier 1
+    shows grep winning.
   - See [docs/benchmarks.md](docs/benchmarks.md).
 - `SqliteStore.load_file_metas()`: the stored per-file records without
   hydrating the graph, so a caller needing only the source inventory does not

@@ -309,8 +309,22 @@ Read the caveats before quoting any number from this tier:
 
 ### Recorded results (live, Claude Code 2.1.224, Opus 5)
 
+Reproduce with the exact task list that produced these numbers:
+
+```bash
+hdl-kgraph bench agent --tasks docs/examples/agent-tasks.txt \
+                       --repeat 2 --model claude-opus-5 --max-turns 12
+```
+
 3 design questions x 2 repetitions x 2 arms = 12 runs, all valid, on the 84-file
-RTL corpus. Total spend **$2.44**. `--max-turns 12`.
+RTL corpus. Total spend **$2.44**.
+
+The three questions are in
+[docs/examples/agent-tasks.txt](examples/agent-tasks.txt), and that file states
+its own selection bias: all three are *scattered-answer* questions, the regime
+the graph is claimed to help with. There is deliberately no `port-map`-style
+question, which tier 1 shows is exactly where grep wins. **These numbers
+characterise the graph on the questions it is for, not on all questions.**
 
 | | graph | no-graph |
 |---|---|---|
