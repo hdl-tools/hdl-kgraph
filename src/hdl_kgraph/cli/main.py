@@ -23,6 +23,7 @@ from hdl_kgraph.cli.analyze import (
     tree,
     visualize,
 )
+from hdl_kgraph.cli.bench import bench
 from hdl_kgraph.cli.build import build, update, watch
 from hdl_kgraph.cli.query import query
 from hdl_kgraph.cli.serve import serve, setup
@@ -64,5 +65,6 @@ for _cmd in (
     setup,
     query,
     tools,
+    bench,
 ):
     main.add_command(_cmd)

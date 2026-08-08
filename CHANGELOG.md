@@ -9,6 +9,37 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Added
+
+- `hdl-kgraph bench` command group: measures the savings claim `setup` seeds
+  into every assistant's instruction file, against the user's own design.
+  - `bench context` prices each design question twice — the graph's JSON
+    envelope versus the grep output plus the files a no-graph agent would have
+    to read — and reports median *and* aggregate savings, per-question rows,
+    latency, and the read-everything token ceiling. Questions are derived from
+    the graph deterministically, so it runs on any design and two runs give
+    identical numbers. The baseline is deliberately constrained and
+    self-documenting: it searches only the files the graph indexed, caps its
+    reads (`--baseline-max-files`, flagged when the cap binds), prints every
+    command it ran, reports the questions where grep is *cheaper*, and excludes
+    any row whose graph answer was empty from the headline. `--fail-under`
+    exits 1 on a missed target for CI gating; `--tokenizer tiktoken` (new
+    optional `bench` extra) replaces the default `chars/4` estimator with exact
+    counts.
+  - `bench fidelity` compares graph and grep answers against hand-authored
+    ground truth over a bundled suite covering a macro-hidden instantiation, a
+    comment/string false positive, a VHDL case-insensitive name, and one case
+    grep answers correctly. `--suite PATH` runs your own cases.
+  - `bench agent` runs an opt-in live Claude Code A/B (one MCP server versus
+    none) and reports the CLI's own token usage. Isolates both arms
+    identically, asserts per run that they differed only in MCP, and documents
+    that no seed or temperature control exists — the output is a spread, not a
+    measurement.
+  - See [docs/benchmarks.md](docs/benchmarks.md).
+- `SqliteStore.load_file_metas()`: the stored per-file records without
+  hydrating the graph, so a caller needing only the source inventory does not
+  pay for a whole-graph `load()`.
+
 ## [Released - pypi]
 
 ## [1.1.0] - 2026-06-16

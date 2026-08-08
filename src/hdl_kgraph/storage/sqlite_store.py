@@ -258,6 +258,20 @@ def _file_ir_row(path: str, unit: StoredUnit) -> tuple[object, ...]:
     return (path, unit.ir, unit.macro_events, unit.included)
 
 
+def _file_meta(row: tuple[Any, ...]) -> FileMeta:
+    """Decode a ``SELECT * FROM files`` row — the inverse of :func:`_file_row`."""
+    return FileMeta(
+        path=row[0],
+        language=Language(row[1]),
+        content_hash=row[2],
+        size_bytes=row[3],
+        parse_error_count=row[4],
+        skipped_reason=row[5],
+        warnings=json.loads(row[6]),
+        parse_errors=json.loads(row[7]),
+    )
+
+
 def _discrepancy_row(d: Discrepancy) -> tuple[object, ...]:
     return (d.kind, d.backend, d.detail, d.node_id, d.src, d.dst, d.heuristic, d.elaborated)
 
@@ -604,6 +618,17 @@ class SqliteStore:
             self._check_version(conn)
             return dict(conn.execute("SELECT path, content_hash FROM files"))
 
+    def load_file_metas(self) -> list[FileMeta]:
+        """Every stored :class:`FileMeta`, without hydrating the graph.
+
+        The same list :meth:`load` returns as its second element — but reading
+        the ``files`` table alone, so a caller that only needs the source
+        inventory (``bench``) does not pay for a whole-graph load.
+        """
+        with self._connect() as conn:
+            self._check_version(conn)
+            return [_file_meta(row) for row in conn.execute("SELECT * FROM files")]
+
     def load_file_warnings(self) -> dict[str, list[str]]:
         """path -> preprocessor warnings, for files that have any.
 
@@ -708,19 +733,7 @@ class SqliteStore:
         """Load (graph, file metadata, meta key/values) from the database."""
         with self._connect() as conn:
             meta = self._check_version(conn)
-            files = [
-                FileMeta(
-                    path=row[0],
-                    language=Language(row[1]),
-                    content_hash=row[2],
-                    size_bytes=row[3],
-                    parse_error_count=row[4],
-                    skipped_reason=row[5],
-                    warnings=json.loads(row[6]),
-                    parse_errors=json.loads(row[7]),
-                )
-                for row in conn.execute("SELECT * FROM files")
-            ]
+            files = [_file_meta(row) for row in conn.execute("SELECT * FROM files")]
             graph = nx.MultiDiGraph()
             for row in conn.execute(f"SELECT {NODE_COLUMNS} FROM nodes"):
                 add_node_row(graph, row)

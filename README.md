@@ -124,6 +124,21 @@ Can't run MCP? The same nine tools are available as plain JSON-printing
 commands under `hdl-kgraph tools …` (no `[mcp]` extra needed).
 → [docs/mcp.md](docs/mcp.md)
 
+**Check the claim yourself.** `hdl-kgraph bench` measures what that
+"query the graph instead of grepping" advice is actually worth *on your
+design*, rather than asking you to take it on faith. `bench context` prices
+each question both ways — the graph's JSON envelope against the grep output
+plus the files a no-graph agent would read — and `bench fidelity` compares
+both against hand-written ground truth. The baseline searches only the files
+the graph indexed, caps and flags its own reads, prints every command it ran,
+and reports the questions where **grep wins** (`port-map` on hand-written RTL
+does). On an RV32I SoC, 11 derived questions cost 8 613 tokens through the
+graph against 369 337 by grep — more than a 200 k context window holds, so the
+un-graphed session cannot even ask them all. Median saving 97.9% over 84 RTL
+files, 96.0% over the full 12.5 MB tree; on a 39 KB toy design it correctly
+reports that the graph is *not worth it*. A live Claude Code A/B is opt-in.
+→ [docs/benchmarks.md](docs/benchmarks.md)
+
 ## What gets extracted
 
 - **Design units:** modules, interfaces, packages, programs; VHDL entities,
