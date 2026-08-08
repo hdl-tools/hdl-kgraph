@@ -234,6 +234,27 @@ def _alias_uf(conn: sqlite3.Connection) -> clocks._UnionFind:
 # --------------------------------------------------------------------------- #
 # clock_domains
 # --------------------------------------------------------------------------- #
+def _scopes_of(conn: sqlite3.Connection, node_ids: set[str]) -> dict[str, dict[str, Any]]:
+    """``id -> {qualified_name, file, line}`` for the given nodes.
+
+    Mirrors :func:`hdl_kgraph.graph.summary._domain_scope`; the oracle-parity
+    test pins the two against each other.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for chunk in _chunks(node_ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        for node_id, qualified, file, line in conn.execute(
+            f"SELECT id, qualified_name, file, line_start FROM nodes WHERE id IN ({placeholders})",
+            tuple(chunk),
+        ):
+            out[node_id] = {
+                "qualified_name": qualified or None,
+                "file": file or None,
+                "line": line,
+            }
+    return out
+
+
 def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
     """Domains keyed by alias-root, mirroring ``clocks.clock_domains`` + the
     ``summary.clock_summary`` shaping (names stripped to counts upstream)."""
@@ -255,6 +276,7 @@ def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
     # process_ids list counts toward process_count but drives nothing relevant).
     all_procs = {p for procs in process_ids.values() for p in procs}
     proc_kind = _kinds_of(conn, all_procs)
+    scopes = _scopes_of(conn, set(names))
     domains: list[dict[str, Any]] = []
     for root, aliases_set in names.items():
         driven: set[str] = set()
@@ -271,6 +293,7 @@ def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
             {
                 "clock": aliases[0],
                 "aliases": aliases,
+                **scopes.get(root, {"qualified_name": None, "file": None, "line": None}),
                 "process_count": len(process_ids[root]),
                 "signal_count": len(driven),
                 "min_confidence": min_conf[root],

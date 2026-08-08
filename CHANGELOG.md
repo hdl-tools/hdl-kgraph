@@ -9,6 +9,52 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Resets with a port suffix were classified as clocks.** The reset-name
+  pattern anchored `$` immediately after the optional polarity, so `rst_n`
+  matched but `rst_n_i` did not — and `_i`/`_o` port suffixes are a common
+  convention. With no term in `@(posedge clk_i or negedge rst_n_i)` recognised
+  as a reset, both terms fell through to the ambiguous-sensitivity branch and
+  were emitted as low-confidence `CLOCKED_BY`. The process then had two clock
+  domains, `graph.clocks` skipped it as ambiguous, and it joined no domain at
+  all. On the validation SoC that corrupted 34 of 130 `CLOCKED_BY` edges (26%),
+  silently dropped 17 processes, and listed reset nets among the clock domains.
+  The affected processes were precisely the CDC logic — the `apb_cdc_bridge`
+  master/slave sides and the `cdc_gray_fifo` write/read sides — so the failure
+  landed exactly where clock crossings live.
+
+  The pattern now accepts trailing polarity and qualifier segments
+  (`rst_n_i`, `rst_ni`, `wr_rst_n_i`, `m_rst_sync_n`, `areset_n`, `clear_i`).
+  Those segments are a **whitelist**, not `.*`, so the #76 rejections
+  (`rst_count`, `reset_value`, `clear_count`) still hold. The SystemVerilog and
+  VHDL backends held identical private copies; they now share one
+  `parser.base.RESET_NAME_RE` and a test pins that they cannot drift apart.
+
+  After the fix on the same design: ambiguous-sensitivity edges 34 → **0**,
+  multi-domain processes 17 → **0**, reset nets among the clock domains 5 →
+  **none**, `RESETS` edges 83 → 110, and the largest domain's minimum
+  confidence 0.4 → 0.6.
+
+- Documented a **known CDC false negative** that this fix does *not* address
+  (`graph/clocks.py`): because aliasing is name-level, a module has one node
+  per formal port shared by all its instances, so instantiating it twice with
+  swapped clocks unions those clocks into one domain. A dual-clock FIFO wired
+  `.wr_clk_i(a)/.rd_clk_i(b)` in one instance and swapped in another therefore
+  reports zero crossings. Separating them needs per-instance net identity, i.e.
+  elaboration.
+
+### Changed
+
+- `clock_domains` now reports **where each domain's clock net is declared**
+  (`qualified_name`, `file`, `line`). Domains are keyed by alias-root but were
+  reported by name alone, so a design with several unrelated nets called `clk`
+  — a standalone module, an uninstantiated testbench — produced several entries
+  all headed `"clk"` with nothing to tell them apart. On the validation SoC that
+  turned four indistinguishable rows into `pll_rnm.out_clk_o`,
+  `rv32i_control.clk`, `rv32i_axi_arbiter.clk`, and `example_counter.clk`.
+  Additive: existing keys are unchanged.
+
 ### Added
 
 - `hdl-kgraph bench` command group: measures the savings claim `setup` seeds

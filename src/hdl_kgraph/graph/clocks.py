@@ -20,6 +20,18 @@ Everything here is name-level and evidence-scored — no elaboration:
   Confidence is the minimum along the evidence path; synchronizers are NOT
   recognized — a proper 2-flop sync still shows up, which is why these are
   *suspects* (M10's SDC ``set_clock_groups`` is the planned suppressor).
+
+  **Known false-negative: a module instantiated on two different clocks.**
+  Aliasing is name-level, so a module has *one* node per formal port, shared
+  by every instance of it. Instantiating that module twice with different
+  actuals unions the two actuals with each other through the shared formal.
+  A dual-clock FIFO instantiated once as ``.wr_clk_i(a), .rd_clk_i(b)`` and
+  again as ``.wr_clk_i(b), .rd_clk_i(a)`` therefore merges ``a`` and ``b``
+  into a single domain — and once two clocks are one domain, nothing
+  "crosses" between them and CDC reports **zero** suspects on exactly the
+  structure that motivated the analysis. Separating them needs per-instance
+  net identity, i.e. elaboration (``build --enrich``); it cannot be done from
+  names alone.
 * **Reset tree.** RESETS edges grouped by alias-root: which nets reset which
   processes, async (1.0, from edge sensitivity) vs name-heuristic (0.4).
 """

@@ -172,6 +172,10 @@ def test_query_clock_domains_json_is_bounded_payload(project: Path) -> None:
         assert set(domain) == {
             "clock",
             "aliases",
+            # Declaring scope, so identically-named domains stay distinguishable.
+            "qualified_name",
+            "file",
+            "line",
             "process_count",
             "signal_count",
             "min_confidence",
