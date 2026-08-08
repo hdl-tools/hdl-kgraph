@@ -192,9 +192,10 @@ class GraphQuery:
             results = analysis.search_nodes(graph, name=name, kinds=kinds, file=file)
             return _page(results, limit, offset)
 
-    def who_instantiates(self, name: str, limit: int, offset: int) -> dict[str, Any]:
-        from hdl_kgraph.mcp.server import _page
-
+    def instances_of(self, name: str) -> list[dict[str, Any]]:
+        """Bounded `instances-of`: every instantiation site of *name* (full list,
+        no pagination) — hydrates only *name*'s nodes and their incoming
+        INSTANTIATES edges, never the whole graph."""
         with self._store._connect() as conn:
             self._store._check_version(conn)
             graph = nx.MultiDiGraph()
@@ -202,7 +203,12 @@ class GraphQuery:
             self._hydrate_nodes(graph, conn, target_ids)
             self._hydrate_in_edges(graph, conn, target_ids, (EdgeKind.INSTANTIATES,))
             self._ensure_endpoints(graph, conn)
-            return _page(analysis.instances_of(graph, name), limit, offset)
+            return analysis.instances_of(graph, name)
+
+    def who_instantiates(self, name: str, limit: int, offset: int) -> dict[str, Any]:
+        from hdl_kgraph.mcp.server import _page
+
+        return _page(self.instances_of(name), limit, offset)
 
     def port_map(self, module: str, instance: str | None) -> dict[str, Any]:
         from hdl_kgraph.mcp.server import _port_map_impl
@@ -229,11 +235,12 @@ class GraphQuery:
             self._ensure_endpoints(graph, conn)
             return _port_map_impl(graph, module, instance)
 
-    def find_signal_drivers(
-        self, signal: str, module: str | None, readers: bool, limit: int, offset: int
-    ) -> dict[str, Any]:
-        from hdl_kgraph.mcp.server import _page
-
+    def signal_drivers(
+        self, signal: str, module: str | None, readers: bool
+    ) -> list[dict[str, Any]]:
+        """Bounded `drivers`: what drives (or reads) *signal* (full list, no
+        pagination) — hydrates only the named signals and their DRIVES/READS
+        fanout, never the whole graph."""
         with self._store._connect() as conn:
             self._store._check_version(conn)
             graph = nx.MultiDiGraph()
@@ -255,10 +262,87 @@ class GraphQuery:
                     if (module.lower() if graph.nodes[sid]["language"] is Language.VHDL else module)
                     in analysis._signal_unit_names(graph, sid)[1]
                 ]
-            self._hydrate_in_edges(graph, conn, drivers_of, (EdgeKind.DRIVES, EdgeKind.READS))
+            # analysis.signal_drivers reads only one edge kind (READS iff readers,
+            # else DRIVES), so hydrate just that one — halves the fanout scan on
+            # the hot path, byte-identical.
+            edge_kinds = (EdgeKind.READS,) if readers else (EdgeKind.DRIVES,)
+            self._hydrate_in_edges(graph, conn, drivers_of, edge_kinds)
             self._ensure_endpoints(graph, conn)
-            results = analysis.signal_drivers(graph, signal, module=module, readers=readers)
-            return _page(results, limit, offset)
+            return analysis.signal_drivers(graph, signal, module=module, readers=readers)
+
+    def find_signal_drivers(
+        self, signal: str, module: str | None, readers: bool, limit: int, offset: int
+    ) -> dict[str, Any]:
+        from hdl_kgraph.mcp.server import _page
+
+        return _page(self.signal_drivers(signal, module, readers), limit, offset)
+
+    def unresolved_stubs(self) -> list[dict[str, Any]]:
+        """Bounded `unresolved`: every unresolved stub and its referrer ids.
+
+        Scans the nodes table for unresolved stubs and hydrates only their
+        incoming edges — `analysis.unresolved_stubs` reads each stub's own attrs
+        and its referrers' *ids* (not their attributes), so the whole graph is
+        never materialised. `_ensure_endpoints` fills the bare referrer nodes so
+        the reused analysis can iterate every node's attrs safely."""
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            graph = nx.MultiDiGraph()
+            for row in conn.execute(
+                f"SELECT {NODE_COLUMNS} FROM nodes WHERE json_extract(attrs, '$.unresolved') = 1"
+            ):
+                add_node_row(graph, row)
+            self._hydrate_in_edges(graph, conn, list(graph.nodes))
+            self._ensure_endpoints(graph, conn)
+            return analysis.unresolved_stubs(graph)
+
+    def modules(self) -> list[dict[str, Any]]:
+        """Bounded `modules`: every MODULE/ENTITY with its instantiation count
+        (full list) — hydrates only those units and their incoming INSTANTIATES
+        edges, never the whole graph. Sorted by ``(name, file, line)`` so the order
+        is deterministic even for same-named units (e.g. a VHDL entity and an SV
+        module sharing a name), independent of row/load order."""
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            graph = nx.MultiDiGraph()
+            ids = [
+                add_node_row(graph, row)
+                for row in conn.execute(
+                    f"SELECT {NODE_COLUMNS} FROM nodes WHERE kind IN (?, ?)",
+                    (NodeKind.MODULE.value, NodeKind.ENTITY.value),
+                )
+            ]
+            self._hydrate_in_edges(graph, conn, ids, (EdgeKind.INSTANTIATES,))
+            return [
+                {
+                    "name": graph.nodes[nid]["name"],
+                    "kind": graph.nodes[nid]["kind"],
+                    "file": graph.nodes[nid]["file"],
+                    "line": graph.nodes[nid]["line_span"][0],
+                    "instances": analysis.instantiation_count(graph, nid),
+                }
+                for nid in sorted(
+                    ids,
+                    key=lambda i: (
+                        graph.nodes[i]["name"],
+                        graph.nodes[i]["file"],
+                        graph.nodes[i]["line_span"][0],
+                    ),
+                )
+                if not graph.nodes[nid]["attrs"].get("unresolved")
+            ]
+
+    def reset_tree(self) -> list[dict[str, Any]]:
+        """Bounded `reset-tree`: RESETS edges grouped by reset net, out-of-core.
+
+        There is no persisted reset summary, so this always recomputes from SQLite
+        via the same net-alias union-find the clock report uses — bounded by the
+        RESETS edges + alias pairs, never a full graph load."""
+        from hdl_kgraph.storage import summaries
+
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.reset_summary_sql(conn)
 
     def top_modules(self) -> list[dict[str, Any]]:
         """MODULE/ENTITY nodes with no incoming INSTANTIATES (indexed)."""
@@ -308,28 +392,77 @@ class GraphQuery:
             # (identical result) and runs the real impact_radius on it.
             return _impact_impl(graph, files, target, max_depth, limit, offset)
 
-    # -- genuinely-global tools (precomputed summary, else full load) ----------
+    # -- genuinely-global tools (precomputed summary, else recompute) ----------
 
     def clock_domains(self) -> dict[str, Any]:
-        from hdl_kgraph.graph.summary import clock_summary
+        """The ``clock_domains`` payload: the persisted summary when present,
+        else a **bounded SQL-native scan** (never a full graph load).
 
-        return self._summary("clock_domains", clock_summary)
-
-    def uvm_topology(self) -> dict[str, Any]:
-        from hdl_kgraph.graph.summary import uvm_summary
-
-        return self._summary("uvm_topology", uvm_summary)
-
-    def _summary(self, name: str, builder: Any) -> dict[str, Any]:
-        """Read a precomputed whole-design summary; for a pre-v8 database with
-        no summaries table, fall back to computing it from the full graph."""
+        The clock/CDC report cannot be answered from a bounded subgraph, but it
+        *can* be computed straight from SQLite without materialising the whole
+        graph (:func:`hdl_kgraph.storage.summaries.clock_summary_sql`, byte-
+        identical to the NetworkX path), so the missing-summary fallback stays
+        out-of-core."""
         import json
 
-        payload = self._store.load_summary(name)
+        from hdl_kgraph.storage import summaries
+
+        payload = self._store.load_summary("clock_domains")
         if payload is not None:
             return dict(json.loads(payload))
-        graph, _, _ = self._store.load()
-        return dict(builder(graph))
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.clock_summary_sql(conn)
+
+    def uvm_topology(self) -> dict[str, Any]:
+        """The ``uvm_topology`` payload: the persisted summary when present, else a
+        **bounded subgraph scan** (only the class graph, never a full graph load).
+
+        Like clock/CDC, the UVM report is whole-design but bounded by the class
+        inheritance graph, so :func:`hdl_kgraph.storage.summaries.uvm_summary_sql`
+        serves the missing-summary fallback out-of-core (byte-identical to the
+        NetworkX path)."""
+        import json
+
+        from hdl_kgraph.storage import summaries
+
+        payload = self._store.load_summary("uvm_topology")
+        if payload is not None:
+            return dict(json.loads(payload))
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.uvm_summary_sql(conn)
+
+    def power_domains(self) -> dict[str, Any]:
+        """The ``power_domains`` payload: the persisted summary when present, else a
+        **bounded subgraph scan** (only POWER_DOMAIN nodes + their CONSTRAINS edges).
+
+        Like clock/UVM, the UPF power-domain report is whole-design but bounded by
+        the small power-domain subgraph, so
+        :func:`hdl_kgraph.storage.summaries.power_summary_sql` serves the
+        missing-summary fallback out-of-core (byte-identical to the NetworkX path)."""
+        import json
+
+        from hdl_kgraph.storage import summaries
+
+        payload = self._store.load_summary("power_domains")
+        if payload is not None:
+            return dict(json.loads(payload))
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.power_summary_sql(conn)
+
+    def qualified_names(self, ids: list[str]) -> dict[str, str]:
+        """``node id -> qualified_name`` for *ids*, bounded (indexed PK lookup).
+
+        For label-resolving a handful of nodes (e.g. the CDC reader processes in
+        the ``cdc`` report) without materialising the whole graph."""
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return {
+                str(row[0]): str(row[1])
+                for row in _select_in(conn, "SELECT id, qualified_name FROM nodes WHERE id", ids)
+            }
 
     # -- subgraph builders -----------------------------------------------------
 

@@ -12,6 +12,7 @@ from hdl_kgraph.cli._common import (
     _run_pipeline,
 )
 from hdl_kgraph.cli._options import (
+    _allow_outside_root_option,
     _enrich_option,
     _input_options,
     _jobs_option,
@@ -96,11 +97,86 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
         click.echo("  (per-file details: re-run with -v, or `hdl-kgraph status --errors`)")
 
 
+def _echo_timings(report: BuildReport) -> None:
+    """Per-phase wall-clock breakdown (``build --timings``).
+
+    Capacity-planning aid for the parallel-build/merge question: phases above
+    the rule are *per-partition parallelizable* (a distributed build runs them
+    independently on each partition), while the link is *serial* and a merge
+    pays it once over the whole union. When parse dominates, splitting the build
+    and merging pays off; when the link dominates, it does not.
+    """
+    phases = [
+        ("discover", report.discover_s, True),
+        ("parse (pass 0+1)", report.parse_s, True),
+        ("link (pass 2)", report.link_s, False),
+        ("enrich (pass 3)", report.enrich_s, False),
+        ("persist", report.persist_s, False),
+    ]
+    measured = sum(s for _, s, _ in phases)
+    if measured <= 0:
+        return
+    click.echo("  timings:")
+    parallelizable = 0.0
+    for name, secs, is_parallel in phases:
+        if secs <= 0 and name == "enrich (pass 3)":
+            continue  # only ran with --enrich
+        pct = 100 * secs / measured
+        click.echo(f"      {name:<18} {secs:7.3f}s  ({pct:5.1f}%)")
+        if is_parallel:
+            parallelizable += secs
+    share = 100 * parallelizable / measured
+    click.echo(
+        f"      {'parallelizable':<18} {parallelizable:7.3f}s  ({share:5.1f}%)  "
+        "[discover+parse: split across partitions]"
+    )
+    click.echo(
+        f"      {'serial link':<18} {report.link_s:7.3f}s  "
+        f"({100 * report.link_s / measured:5.1f}%)  [paid once at merge]"
+    )
+    _echo_enrich_phases(report)
+
+
+def _echo_enrich_phases(report: BuildReport) -> None:
+    """Break the ``enrich (pass 3)`` line into its internal phases.
+
+    Surfaces the pass-3 profiler (:mod:`hdl_kgraph.enrich._profile`) so it is
+    clear which part of elaboration dominates — slang parse vs ``getRoot``
+    elaboration vs the Python-side tree walk vs the graph delta-apply. Top-level
+    spans (no ``/``) tile the pass; ``parent/child`` spans detail one of them.
+    Percentages are of the enrichment pass, not the whole build.
+    """
+    timings = report.enrich_phase_s
+    if not timings or report.enrich_s <= 0:
+        return
+    total = report.enrich_s
+    top = sorted(((n, s) for n, s in timings.items() if "/" not in n), key=lambda x: -x[1])
+    detail = sorted(((n, s) for n, s in timings.items() if "/" in n), key=lambda x: -x[1])
+    click.echo("  enrich phases (% of pass 3):")
+    for name, secs in top:
+        click.echo(f"      {name:<22} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
+    for name, secs in detail:
+        click.echo(f"        {name:<20} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
+    # Per-instance cost of the elaborated-tree walk — the line that says whether
+    # the walk is super-linear (cost/instance rising with design size).
+    instances = report.enrich_phase_counts.get("walk_instances", 0)
+    walk_s = timings.get("slang/walk_tree", 0.0)
+    if instances and walk_s > 0:
+        per_us = 1_000_000 * walk_s / instances
+        click.echo(f"        {'walk_instances':<20} {instances:>9,}  ({per_us:.2f} us/instance)")
+
+
 @click.command()
 @_input_options
 @_verbose_option
 @_jobs_option
+@_allow_outside_root_option
 @_enrich_option
+@click.option(
+    "--timings",
+    is_flag=True,
+    help="Print a per-phase wall-clock breakdown (parse vs link vs persist).",
+)
 def build(
     source: Path,
     db_path: Path | None,
@@ -114,8 +190,10 @@ def build(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    allow_outside_root: bool,
     enrich: bool,
     no_auto_incdir: bool,
+    timings: bool,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
     options = _resolve_options(
@@ -131,6 +209,7 @@ def build(
         no_auto_incdir,
     )
     options.jobs = jobs
+    options.allow_outside_root = allow_outside_root
     options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
     report = _run_pipeline(
@@ -141,6 +220,8 @@ def build(
     )
     renderer.finish()
     _echo_build_report(report, verbose=verbose)
+    if timings:
+        _echo_timings(report)
 
 
 def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
@@ -166,8 +247,16 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
 @_input_options
 @_verbose_option
 @_jobs_option
+@_allow_outside_root_option
 @_enrich_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
+@click.option(
+    "--bounded-link/--no-bounded-link",
+    default=True,
+    show_default=True,
+    help="Re-link incrementally without loading the whole prior graph (#119). "
+    "Default; --no-bounded-link uses the legacy in-memory re-link.",
+)
 def update(
     source: Path,
     db_path: Path | None,
@@ -181,8 +270,10 @@ def update(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    allow_outside_root: bool,
     enrich: bool,
     full: bool,
+    bounded_link: bool,
     no_auto_incdir: bool,
 ) -> None:
     """Incrementally update the graph: re-parse only changed files.
@@ -205,7 +296,9 @@ def update(
         no_auto_incdir,
     )
     options.jobs = jobs
+    options.allow_outside_root = allow_outside_root
     options.enrich = options.enrich or enrich
+    options.bounded_link = bounded_link
     renderer = _ProgressRenderer()
     report = _run_pipeline(
         lambda: run_update(
@@ -226,6 +319,7 @@ def update(
 @_input_options
 @_verbose_option
 @_jobs_option
+@_allow_outside_root_option
 @click.option(
     "--debounce",
     type=int,
@@ -247,6 +341,7 @@ def watch(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    allow_outside_root: bool,
     debounce: int,
     no_auto_incdir: bool,
 ) -> None:
@@ -266,6 +361,7 @@ def watch(
         no_auto_incdir,
     )
     options.jobs = jobs
+    options.allow_outside_root = allow_outside_root
 
     renderer = _ProgressRenderer()
 

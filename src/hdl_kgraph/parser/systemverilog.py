@@ -474,6 +474,64 @@ class _Walker(_WalkerBase[_Scope]):
     def _on_constructor(self, node: TSNode) -> None:
         self._new_node(NodeKind.FUNCTION, "new", node, is_constructor=True)
 
+    # -- DPI-C foreign bindings (M8) --------------------------------------------------
+
+    def _on_dpi(self, node: TSNode) -> None:
+        """``import``/``export "DPI-C"`` → a FUNCTION/TASK node + FOREIGN_BINDS ref.
+
+        An *import* declares an SV-side prototype that the linker binds to a
+        C/C++ function definition (by the linkage name — the ``c_name =`` alias
+        if present, else the SV name). An *export* makes an existing SV
+        subprogram callable from C; its ref resolves locally to that subprogram.
+        """
+        self._count_subtree_errors(node)
+        c_ident = self._child(node, "c_identifier")
+        c_name = self._text(c_ident) if c_ident is not None else ""
+        if self._child(node, "export") is not None:
+            name = self._identifier(node)  # `export "DPI-C" function|task <name>;`
+            if not name:
+                return
+            self.ir.unresolved_refs.append(
+                UnresolvedRef(
+                    edge_kind=EdgeKind.FOREIGN_BINDS,
+                    src_id=self.scope.node_id,
+                    target_name=name,
+                    line_span=self._span(node),
+                    attrs={"dpi_export": True, "linkage": "DPI-C", "c_identifier": c_name or None},
+                    confidence=self._ref_confidence(node),
+                )
+            )
+            return
+        task_proto = self._child(node, "dpi_task_proto")
+        proto = task_proto if task_proto is not None else self._child(node, "dpi_function_proto")
+        if proto is None:
+            return
+        name_node = self._find_first(proto, "simple_identifier")
+        name = self._text(name_node) if name_node is not None else ""
+        if not name:
+            return
+        kind = NodeKind.TASK if task_proto is not None else NodeKind.FUNCTION
+        prop = self._child(node, "dpi_function_import_property", "dpi_task_import_property")
+        fn = self._new_node(
+            kind,
+            name,
+            node,
+            dpi_import=True,
+            linkage="DPI-C",
+            c_identifier=c_name or None,
+            dpi_property=self._text(prop).strip() if prop is not None else None,
+        )
+        self.ir.unresolved_refs.append(
+            UnresolvedRef(
+                edge_kind=EdgeKind.FOREIGN_BINDS,
+                src_id=fn.id,
+                target_name=c_name or name,
+                line_span=self._span(node),
+                attrs={"linkage": "DPI-C"},
+                confidence=self._ref_confidence(node),
+            )
+        )
+
     # -- instantiations ------------------------------------------------------------------
 
     def _on_instantiation(self, node: TSNode) -> None:
@@ -1109,6 +1167,7 @@ class _Walker(_WalkerBase[_Scope]):
         "function_declaration": _on_function,
         "task_declaration": _on_task,
         "class_constructor_declaration": _on_constructor,
+        "dpi_import_export": _on_dpi,
         "module_instantiation": _on_instantiation,
         "package_import_declaration": _on_import,
         # M5: dataflow + clocks

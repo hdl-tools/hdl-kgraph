@@ -9,7 +9,17 @@ modeled on [code-review-graph](https://github.com/tirth8205/code-review-graph):
 Python 3.10+, tree-sitter parsing, NetworkX graph algorithms, SQLite persistence,
 a CLI, and (later) an MCP server for AI assistants. Distribution is via pip/PyPI.
 
-**MVP line:** Milestones M1–M4. M5–M6 are value-add. M7–M10 are stretch goals.
+**Status (v2.4.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
+(M11–M13a — bounded reads, out-of-core whole-design summaries, and a
+memory-bounded incremental linker) is delivered. M8–M10 (EDA flow languages,
+DPI-C, emerging HDLs) remain an exploratory/community-contribution track, but
+two wedges are now in. M8's C/C++/Python boundary: DPI-C linking (SV
+`import`/`export "DPI-C"` ↔ C/C++ functions, v2.3) and cocotb testbench scanning
+(Python `dut.<signal>` → `READS`/`DRIVES`, test discovery → `TEST_COVERS`, v2.4).
+M10's first wedge: SDC/XDC timing constraints (`create_clock` → `CLOCK` nodes and
+authoritative `CLOCKED_BY` evidence, `set_clock_groups`/`set_false_path` → CDC
+suppression) — see M10 below. The Rust core (M13) is deferred — profiling (M12)
+showed it isn't needed for the RAM goal.
 
 ---
 
@@ -60,6 +70,7 @@ Every edge carries: `src`, `dst`, `kind`, `confidence`, and `attrs`.
 | `GENERATED_FROM` | generated HDL → generator source (M9 Chisel/Amaranth/SpinalHDL, M10 Perl codegen) |
 | `CONSTRAINS` | timing constraint/clock/power domain → port/signal/instance/clock (M10) |
 | `REFERENCES_FILE` | Perl/Tcl script → HDL file it reads/compiles/generates (M10) |
+| `INVOKES` | SLN/PSS action → sub-action it does, same-file (M10) |
 
 ### Confidence convention
 
@@ -360,15 +371,74 @@ waits on (or runs out of memory loading) the whole graph.
 - [x] **Dirty-closure-scoped incremental write (v0.10):** `save_incremental`
       reads and rewrites only the changed rows (a one-file edit touches ~0.04 %
       of the corpus), not the whole `nodes`/`edges` tables.
-- [ ] **Memory-bounded incremental linker:** the last O(design) cost is the
-      incremental linker still loading the full prior graph; an all-or-nothing
-      rewrite (SQL-backed resolution + stub-GC + incremental TEST_COVERS), so far
-      deferred — see [docs/scalability.md](docs/scalability.md).
+- [x] **Memory-bounded incremental linker (v2.0, was the last O(design) cost):**
+      the incremental linker no longer loads the full prior graph — it re-resolves
+      the dirty closure straight from SQLite (SQL-backed resolution + bounded
+      stub-GC + out-of-core TEST_COVERS + selective IR decode), byte-identical to
+      the in-memory path. Landed opt-in as `--bounded-link` (v1.12), became the
+      default (v1.13+), formalized in v2.0 — see
+      [docs/scalability.md](docs/scalability.md).
 
 **Acceptance:** `tests/test_query.py` (read parity + no-full-load proof),
 `tests/test_incremental_equivalence.py` (byte-identical scoped writes),
 `scripts/bench_query.py` and `scripts/bench_incremental.py` (latency + bounded
 read/write volume). Detail in [docs/scalability.md](docs/scalability.md).
+
+---
+
+## v2.0 — Rust-cored re-architecture for the 10–100 GB regime ([#128])
+
+The in-memory `MultiDiGraph` is an architectural ceiling, not a config knob: the
+profiling below shows it is **~2.3× the on-disk DB**, so a 100 GB design needs
+~225 GB RAM and "does not load." v2 is a deliberate major-version break — an
+out-of-core / compact core behind the stable `storage`/`GraphQuery` seam.
+
+**Delivered in 2.0.0 (out-of-core, without a Rust core).** The RAM goal landed
+incrementally behind the existing Python `storage` seam (releases 1.8 → 1.15,
+formalised as 2.0.0): reads (`GraphQuery`), whole-design summaries, the
+incremental linker, IR decode, and TEST_COVERS are all bounded; a 100 GB design
+loads via the out-of-core path. The bespoke Rust core (M13) is **deferred** — off
+the critical path for the RAM goal.
+
+- [x] **M11 — profile & decision gate:** memory + CPU profile of `build` /
+      summaries / `load()` across a scale sweep (`scripts/profile_v2.py`),
+      pinning the dominant cost and selecting the M12 path —
+      [docs/v2/m11_profiling.md](docs/v2/m11_profiling.md). Finding: `load()` is
+      graph-CPU-bound (85–90 %), not SQLite-I/O-bound, and **peak RAM from
+      materialising the whole graph is the binding constraint**.
+- [x] **M12 — graph-layer spike:** evaluated an out-of-core layer and a compact
+      in-memory core via `scripts/spike_m12.py` —
+      [docs/v2/m12_graph_layer.md](docs/v2/m12_graph_layer.md). Finding: an
+      **off-the-shelf out-of-core layer hits the RAM target** — SQL-native scans
+      (zero dep) and `kuzu` (embedded graph DB) answer a whole-design scan in
+      **bounded RAM** (~50 MiB / ~110 MiB flat, vs NetworkX's 4610 B/node linear →
+      ~228 GB at 100 GB). `rustworkx` lowers the constant (~29 %) but stays linear
+      (runner-up, ~10 GB regime). **A bespoke Rust core is not required to clear
+      the RAM ceiling**, so M13 is deferred.
+- [x] **M12.5 — productionise the out-of-core whole-design summaries** behind
+      `GraphQuery`: clock-domains/CDC (1.9.0) and UVM topology (1.10.0) compute
+      from SQLite when the persisted summary is absent, never `SqliteStore.load()`
+      (byte-identical to the NetworkX oracle). The CLI report commands then routed
+      through the same bounded path: `clock-domains`/`cdc`/`uvm` (2.0.0), then the
+      remaining single-target commands `instances-of`/`drivers`/`unresolved` (2.1.0)
+      and `modules`/`reset-tree` (2.2.0, adding an out-of-core `reset_summary_sql`).
+      **As of 2.2.0 no `query` command full-loads the graph.**
+- [x] **M13a — memory-bounded incremental linker (#119):** the `update` re-link
+      re-resolves only the dirty closure straight from SQLite (lazy
+      `idx_nodes_kind_name`/`idx_edges_*`, bounded stub-GC), byte-identical to a
+      full build. Shipped opt-in (1.12.0) → default (1.13.0), with selective IR
+      decode (1.14.0) and out-of-core TEST_COVERS re-derivation (1.15.0). The
+      whole `update` pipeline is now bounded by the dirty closure.
+- [ ] **M13 — PyO3 Rust core (deferred; only if M12's off-the-shelf path proves
+      insufficient):** compact streaming graph + pass-2 link + whole-design scans;
+      subsumes the memory-bounded linker (#119). Per M12, the off-the-shelf
+      out-of-core path clears the documented wall, so this is no longer on the
+      critical path — revisit only if a scan needs what neither SQL nor kuzu
+      expresses efficiently.
+- [ ] **M14 — native tree-sitter walk → `FileIR` (optional):** remove per-node FFI
+      from the parse hot path.
+
+[#128]: https://github.com/chuanseng-ng/hdl-kgraph/issues/128
 
 ---
 
@@ -399,11 +469,26 @@ target on the exploratory track above.
 
 **Goal:** the full system picture — DPI, cosim, testbench scripting.
 
-- [ ] DPI-C linking: SV `import "DPI-C"`/`export "DPI-C"` ↔ C/C++ function
-      definitions (tree-sitter-c/cpp) via `FOREIGN_BINDS` edges
-- [ ] Python testbench scanning: cocotb `dut.signal` attribute access →
+- [x] DPI-C linking: SV `import "DPI-C"`/`export "DPI-C"` ↔ C/C++ function
+      definitions (tree-sitter-c/cpp) via `FOREIGN_BINDS` edges — **C/C++
+      pass-1 parsers (`parser/c.py`) emit a `FUNCTION` node per top-level
+      definition/prototype; the SV parser extracts `import`/`export "DPI-C"`
+      declarations (alias `c_name =` form, pure/context properties, imported
+      tasks); pass 2 binds them by linkage name, filtered to C/CPP candidates
+      (a unique cross-file match is 0.8, an unresolved name degrades to a
+      stub). C/C++ bypass the SV preprocessor; bare-name matching is the tier
+      (no C++ mangling, no C preprocessor). Schema unchanged — `FOREIGN_BINDS`
+      and the `C`/`CPP` languages already existed. See docs/extraction.md**
+- [x] Python testbench scanning: cocotb `dut.signal` attribute access →
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
-      `TEST_COVERS`
+      `TEST_COVERS` — **`parser/python.py` (tree-sitter-python) extracts
+      `@cocotb.test` functions as PYTHON `FUNCTION` nodes; `dut.sig.value =`/
+      `setimmediatevalue` → DRIVES, other `dut.sig` reads → READS, resolved
+      against the DUT module's ports/signals; `TEST_COVERS` to the DUT (0.4).
+      The DUT is heuristic — configured `[build].top` else a filename guess
+      (`test_fifo.py` → `fifo`) — so a `.py` is only a source when it mentions
+      `cocotb` (content-sniffed), and `update` re-links cocotb designs fully.
+      See docs/extraction.md**
 - [x] Stable public CLI + graph schema, semver commitment, documented
       migration policy — **shipped in v1.0** once its prerequisites landed: the
       SQLite schema migration ladder (#74) so a version bump no longer forces a
@@ -435,33 +520,55 @@ graph spanning all three languages.
 clock evidence, power intent, legacy script codegen lineage, and portable-stimulus
 scenario coverage.
 
-- [ ] SDC/XDC parsing (Tcl subset): `create_clock`/`create_generated_clock` →
+- [x] SDC/XDC parsing (Tcl subset): `create_clock`/`create_generated_clock` →
       `CLOCK` nodes (virtual and generated clocks supported); `set_false_path`,
       `set_multicycle_path`, `set_input_delay`/`set_output_delay`,
       `set_clock_groups` → `TIMING_CONSTRAINT` nodes with `CONSTRAINS` edges;
       `get_ports`/`get_pins`/`get_cells`/`get_clocks` object queries resolved to
-      design nodes (exact match 1.0; glob patterns 0.8/0.6)
-- [ ] M5 synergy: `create_clock` is authoritative `CLOCKED_BY` evidence — upgrades
+      design nodes (exact match 1.0; glob patterns 0.8/0.6) — **`parser/tcl.py`'s
+      `SdcParser` (hand-written Tcl-subset scanner, literal `set` substitution
+      only) and a `_resolve_constrains` pass-2 branch; wired into discovery and
+      the pipeline. See docs/extraction.md ([#25])**
+- [x] M5 synergy: `create_clock` is authoritative `CLOCKED_BY` evidence — upgrades
       the 0.4 name heuristic to 1.0; `set_clock_groups -asynchronous` and
-      `set_false_path` feed the CDC report as declared-safe crossings
-- [ ] UPF (IEEE 1801) power intent: `create_power_domain` → `POWER_DOMAIN` nodes
+      `set_false_path` feed the CDC report as declared-safe crossings —
+      **`graph.clocks.apply_sdc_clock_evidence` (called from `link_graph`) bumps
+      the backed CLOCKED_BY edges to 1.0; `cdc_suspects` flags suppressed
+      crossings `declared_safe` and the report partitions them out**
+- [x] UPF (IEEE 1801) power intent: `create_power_domain` → `POWER_DOMAIN` nodes
       with `CONSTRAINS` edges to their elements; supply nets/sets and isolation/
       retention/level-shifter strategies in attrs; power-domain report (domains,
-      strategies, domain-crossing suspects) analogous to the CDC report
-- [ ] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
-      `REFERENCES_FILE` edges; `source` chains → `INCLUDES`; literal `set`
-      variable substitution only — Tcl is never evaluated (see Risks)
-- [ ] Perl legacy scripting: detect HDL files a script reads/writes/generates
+      strategies) analogous to the CDC report — **`UpfParser` shares the SDC
+      Tcl-subset base; `-elements` reuse the `cells` query resolution; the
+      `power_domains` report ships as a query/MCP tool + persisted summary (with an
+      out-of-core SQL fallback) + `analyze` digest line. Domain-crossing suspects
+      are a follow-on. See docs/extraction.md, docs/analyses.md**
+- [x] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
+      `REFERENCES_FILE` edges; `source` chains; literal `set` variable
+      substitution only — Tcl is never evaluated (see Risks) — **`TclScriptParser`
+      shares the SDC/UPF Tcl-subset base; read/analyze/add/source commands all
+      emit `REFERENCES_FILE` (one edge kind, `attrs["mode"]` distinguishes them —
+      simpler and uniform for incremental than splitting `source` onto
+      `INCLUDES`); a new pass-2 `_resolve_file_ref` binds each path to its real
+      `FILE` node or a non-shadowing `unresolved:file:` stub. See
+      docs/extraction.md**
+- [x] Perl legacy scripting: detect HDL files a script reads/writes/generates
       (`open()` of `.v`/`.sv` paths, heredoc-embedded Verilog) →
       `REFERENCES_FILE` + `GENERATED_FROM` lineage for generated RTL;
-      expectations modest — codegen patterns, not Perl semantics
-      (tree-sitter-perl exists if needed)
-- [ ] SLN (Cadence Perspec System Level Notation) portable stimulus:
-      actions/scenarios/resources → `SCENARIO`/`ACTION` nodes; scenario → DUT
-      linkage via `TEST_COVERS`; Accellera PSS (`.pss`), the open sibling format,
-      is the natural follow-on
-- [ ] `.sln` disambiguation: content-sniff the Visual Studio solution header and
-      skip non-SLN files
+      expectations modest — codegen patterns, not Perl semantics — **`PerlParser`
+      is a line/regex scan: parenthesized `open()` of an HDL path → REFERENCES_FILE
+      (read/write); a `module`…`endmodule` body flags the script a generator, and
+      each written HDL file → GENERATED_FROM (reusing the flow-script
+      `_resolve_file_ref`, now handling the reversed generated→generator
+      direction). See docs/extraction.md**
+- [x] SLN (Cadence Perspec System Level Notation) portable stimulus:
+      actions → `ACTION` nodes; `>`-invocations → `INVOKES` (same-file action) and
+      `TEST_COVERS` (design module/instance) — **the real format is the `e`/Specman
+      dialect (not the PSS-like guess), so `SlnParser` scans `action`/`>sub_action`/
+      constraints best-effort; `INVOKES` is a new additive `EdgeKind`. Accellera PSS
+      (`.pss`) remains the natural open-sibling follow-on. See docs/extraction.md**
+- [x] `.sln` disambiguation: content-sniff the Visual Studio solution header and
+      skip non-SLN files (`skipped_reason="visual_studio_solution"`)
 - [ ] Fixtures: an SDC and a UPF for the counter fixtures, a flow `.tcl`, a Perl
       heredoc codegen script, a minimal SLN scenario
 

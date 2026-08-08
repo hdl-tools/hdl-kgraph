@@ -257,9 +257,17 @@ class BuildOptions:
     vhdl_libraries: dict[str, Path] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     jobs: int | None = None  # pass-1 parse workers; None = auto, 1 = serial
+    # Let filelists reference sources/+incdir+ dirs outside the build root,
+    # relaxing the #68 containment (opt-in; default keeps tokens root-confined).
+    allow_outside_root: bool = False
     enrich: bool = False  # run M7 native-frontend elaboration (opt-in)
     # Restrict enrichment to these backend names; empty = all installed.
     enrich_backends: list[str] = field(default_factory=list)
+    # Memory-bounded incremental re-link (#119): re-resolve the dirty closure
+    # straight from SQLite instead of loading the whole prior graph. Default
+    # since v1.13.0; ``update --no-bounded-link`` falls back to the in-memory
+    # path. The byte-identical fuzz suite covers both.
+    bounded_link: bool = True
 
 
 def parse_lib(text: str) -> tuple[str, Path]:

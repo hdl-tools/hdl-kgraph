@@ -150,6 +150,7 @@ class EdgeKind(enum.Enum):
     GENERATED_FROM = "generated_from"  # generated HDL -> generator (M9 Chisel/etc., M10 Perl)
     CONSTRAINS = "constrains"  # timing constraint/clock/power domain -> design object (M10)
     REFERENCES_FILE = "references_file"  # script -> design file (M10; attrs: read/write/compile)
+    INVOKES = "invokes"  # SLN/PSS action -> sub-action it does (same-file, M10)
 
 
 @dataclass

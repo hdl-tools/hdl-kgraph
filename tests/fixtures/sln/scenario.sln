@@ -1,0 +1,25 @@
+<'
+// M10 fixture: Cadence Perspec SLN (e/Specman dialect). Real syntax shape, not
+// the earlier illustrative form. Exercises: a same-file action invocation
+// (INVOKES), an invocation matching a design module (TEST_COVERS -> top),
+// testbench sequences that resolve to nothing, and a commented-out invocation.
+extend DVE {
+    action low_power_scen {
+        compound {
+            >prep_phase;
+            in sequence {
+                >tb_call_wait_power_ack_seq {
+                    .cluster_tag == tb0;
+                    .status == 0;
+                };
+                //>tb_call_pmic_voltage_change_seq { .cluster_tag == tb0; };
+                >top { .mode == LOW_POWER; };
+            };
+        };
+    };
+
+    action prep_phase {
+        >tb_reset_seq { .cluster_tag == tb0; };
+    };
+};
+'>

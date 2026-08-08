@@ -17,8 +17,27 @@ from pathlib import Path
 
 import pytest
 
+from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.pipeline import default_db_path, run_build, run_update
 from hdl_kgraph.storage.sqlite_store import SqliteStore
+
+# Every equivalence/fuzz case runs under BOTH link paths — the default in-memory
+# `link_incremental` and the opt-in memory-bounded re-link (#119) — so the
+# byte-identical gate covers the bounded path too. Set by the autouse fixture.
+_BOUNDED_LINK = False
+
+
+@pytest.fixture(params=[False, True], ids=["inmem", "bounded"], autouse=True)
+def _link_mode(request: pytest.FixtureRequest):
+    """Run each test once per incremental-link path."""
+    global _BOUNDED_LINK
+    _BOUNDED_LINK = request.param
+    yield
+    _BOUNDED_LINK = False
+
+
+def _update(root: Path) -> None:
+    run_update(root, options=BuildOptions(bounded_link=_BOUNDED_LINK))
 
 
 def _signature(graph) -> tuple[list, list]:
@@ -50,7 +69,7 @@ def _graph(root: Path):
 
 def _assert_incremental_matches_full(root: Path, label: str = "") -> None:
     """``update`` then a fresh ``build`` of the same tree must be identical."""
-    run_update(root)
+    _update(root)
     inc_nodes, inc_edges = _signature(_graph(root))
     run_build(root)
     full_nodes, full_edges = _signature(_graph(root))
@@ -149,6 +168,86 @@ def test_incremental_matches_full_across_edit_shapes(
     _assert_incremental_matches_full(project, edit.__name__)
 
 
+# -- UVM / TEST_COVERS edit shapes (#119 bounded derive_test_covers) ----------
+# The bounded re-link produces only a partial graph, so TEST_COVERS is re-derived
+# whole-design out-of-core after the scoped write. These edits change the derived
+# set; the byte-identical gate (run under both link paths) pins that the bounded
+# path matches a full build — the `project` fixture above has no UVM, so without
+# these the gap was invisible.
+
+
+@pytest.fixture
+def uvm_project(tmp_path: Path) -> Path:
+    """A tb_* top instantiating a resolved DUT, plus a uvm_test class chain."""
+    (tmp_path / "dut.sv").write_text(
+        "module verif_dut(input logic clk, output logic gnt);\n  assign gnt = clk;\nendmodule\n"
+    )
+    (tmp_path / "dut2.sv").write_text(
+        "module verif_dut2(input logic clk, output logic gnt);\n  assign gnt = ~clk;\nendmodule\n"
+    )
+    (tmp_path / "tb.sv").write_text(
+        "module tb_verif_top;\n"
+        "  logic clk, gnt;\n"
+        "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n"
+        "endmodule\n"
+        "class verif_base_test extends uvm_test;\n"
+        "endclass\n"
+    )
+    run_build(tmp_path)
+    return tmp_path
+
+
+def _tb_add_dut_instance(p: Path) -> None:
+    f = p / "tb.sv"
+    old = f.read_text()
+    new = old.replace(
+        "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n",
+        "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n  verif_dut2 u_dut2(.clk(clk), .gnt(gnt));\n",
+    )
+    assert new != old, "expected to add verif_dut2 instance in tb.sv"
+    f.write_text(new)
+
+
+def _tb_remove_dut_instance(p: Path) -> None:
+    f = p / "tb.sv"
+    old = f.read_text()
+    new = old.replace("  verif_dut u_dut(.clk(clk), .gnt(gnt));\n", "")
+    assert new != old, "expected to remove verif_dut instance from tb.sv"
+    f.write_text(new)
+
+
+def _add_uvm_test_class(p: Path) -> None:
+    f = p / "tb.sv"
+    f.write_text(f.read_text() + "class verif_smoke_test extends verif_base_test;\nendclass\n")
+
+
+def _remove_dut_module(p: Path) -> None:
+    (p / "dut.sv").unlink()
+
+
+def _add_second_tb_top(p: Path) -> None:
+    (p / "tb2.sv").write_text(
+        "module tb_other;\n  logic clk, gnt;\n  verif_dut2 u(.clk(clk), .gnt(gnt));\nendmodule\n"
+    )
+
+
+_UVM_EDITS: list[tuple[str, Callable[[Path], None]]] = [
+    ("tb_add_dut_instance", _tb_add_dut_instance),
+    ("tb_remove_dut_instance", _tb_remove_dut_instance),
+    ("add_uvm_test_class", _add_uvm_test_class),
+    ("remove_dut_module_to_stub", _remove_dut_module),
+    ("add_second_tb_top", _add_second_tb_top),
+]
+
+
+@pytest.mark.parametrize("edit", [e for _, e in _UVM_EDITS], ids=[i for i, _ in _UVM_EDITS])
+def test_incremental_matches_full_uvm_test_covers(
+    uvm_project: Path, edit: Callable[[Path], None]
+) -> None:
+    edit(uvm_project)
+    _assert_incremental_matches_full(uvm_project, edit.__name__)
+
+
 # -- randomized edit-sequence fuzz --------------------------------------------
 
 _MAX_FILES = 7
@@ -216,7 +315,7 @@ def test_incremental_equals_full_fuzz(tmp_path: Path, seed: int) -> None:
     for step in range(8):
         counter = _random_edit(rng, model, counter)
         _materialize(inc, model)
-        run_update(inc)
+        _update(inc)
         inc_sig = _signature(_graph(inc))
 
         ref = tmp_path / f"ref_{step}"

@@ -57,7 +57,7 @@ import networkx as nx
 from hdl_kgraph import __version__
 from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import RefRecord
-from hdl_kgraph.schema import EdgeKind, Language, NodeKind
+from hdl_kgraph.schema import Edge, EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.ir_codec import IR_CODEC_VERSION
 
 SCHEMA_VERSION = "8"  # v8: summaries table (precomputed whole-design reports)
@@ -644,6 +644,23 @@ class SqliteStore:
                 )
             }
 
+    def load_file_errors(self) -> dict[str, tuple[int, list[str]]]:
+        """path -> (parse_error_count, parse_error details), for files that have any.
+
+        ``update`` carries these forward for clean units it does not re-decode on
+        the selective bounded path (the parse-error telemetry otherwise lives only
+        in the stored IR).
+        """
+        with self._connect() as conn:
+            self._check_version(conn)
+            return {
+                path: (count, json.loads(errors))
+                for path, count, errors in conn.execute(
+                    "SELECT path, parse_error_count, parse_errors FROM files "
+                    "WHERE parse_error_count != 0"
+                )
+            }
+
     def load_dependency_graph(self) -> nx.MultiDiGraph:
         """The preprocessor-dependency subgraph (M4 dirty closure).
 
@@ -679,6 +696,39 @@ class SqliteStore:
                 path: StoredUnit(ir=ir, macro_events=events, included=included)
                 for path, ir, events, included in conn.execute("SELECT * FROM file_irs")
             }
+
+    def load_macro_events(self) -> dict[str, tuple[str, str]]:
+        """``path -> (macro_events, included)`` for every stored unit, **without**
+        the large ``ir`` blob (#119 selective decode).
+
+        The bounded `update` path must still replay each clean unit's macro events
+        in compile order (the shared preprocessor table feeds dirty re-parses), but
+        only needs the small columns to do so — the full IR is decoded later, and
+        only for the dirty/affected units (:meth:`load_units_for`)."""
+        with self._connect() as conn:
+            self._check_version(conn)
+            return {
+                path: (events, included)
+                for path, events, included in conn.execute(
+                    "SELECT path, macro_events, included FROM file_irs"
+                )
+            }
+
+    def load_units_for(self, paths: set[str]) -> dict[str, StoredUnit]:
+        """Full stored units (incl. the ``ir`` blob) for just *paths* — the
+        dirty/affected units the bounded re-link actually decodes (#119)."""
+        out: dict[str, StoredUnit] = {}
+        with self._connect() as conn:
+            self._check_version(conn)
+            for chunk in _chunked(set(paths)):
+                placeholders = ", ".join("?" for _ in chunk)
+                for path, ir, events, included in conn.execute(
+                    f"SELECT path, ir, macro_events, included FROM file_irs "
+                    f"WHERE path IN ({placeholders})",
+                    tuple(chunk),
+                ):
+                    out[path] = StoredUnit(ir=ir, macro_events=events, included=included)
+        return out
 
     def load_discrepancies(self) -> list[Discrepancy]:
         """The M7 enrichment findings (empty for a non-enriched build)."""
@@ -729,6 +779,69 @@ class SqliteStore:
             row = conn.execute("SELECT payload FROM summaries WHERE name = ?", (name,)).fetchone()
             return row[0] if row else None
 
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert a single ``meta`` key/value — e.g. post-build telemetry written
+        after persist (``build_stats``). A small in-place write to the live (WAL)
+        database; readers tolerate the key's absence on older DBs."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def save_summaries(self, summaries: dict[str, str]) -> None:
+        """Replace the whole-design ``summaries`` table in one small transaction.
+
+        Used by the bounded-link path (#119), which writes the node/edge/ref
+        delta first (leaving summaries untouched) and then recomputes the
+        summaries from the updated database via the SQL-native scans."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM summaries")
+            conn.executemany(
+                "INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items())
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def replace_test_covers(self, edges: list[Edge]) -> None:
+        """Replace every TEST_COVERS edge with *edges* in one transaction.
+
+        The bounded re-link's partial graph can't run ``derive_test_covers``
+        (which is whole-graph), so the bounded ``update`` path re-derives the full
+        set out-of-core (``summaries.test_covers_sql``) and reconciles it here.
+        A full replace is byte-identical — the equivalence gate compares the
+        *set* of loaded edges — and bounded by the small TEST_COVERS count."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM edges WHERE kind = ?", (EdgeKind.TEST_COVERS.value,))
+            conn.executemany(
+                "INSERT INTO edges VALUES (?, ?, ?, ?, ?)",
+                [
+                    _edge_row(
+                        e.src, e.dst, {"kind": e.kind, "confidence": e.confidence, "attrs": e.attrs}
+                    )
+                    for e in edges
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def graph_counts(self) -> tuple[int, int, int]:
+        """``(nodes, edges, unresolved_nodes)`` from the live DB without loading
+        the graph — for build-report counts on the bounded-link path."""
+        with self._connect() as conn:
+            self._check_version(conn)
+            nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+            unresolved = conn.execute(
+                "SELECT COUNT(*) FROM nodes WHERE json_extract(attrs, '$.unresolved') = 1"
+            ).fetchone()[0]
+            return int(nodes), int(edges), int(unresolved)
+
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""
         with self._connect() as conn:
@@ -768,7 +881,10 @@ def _apply_delta(
     units = units or {}
     discrepancies = discrepancies or []
     ref_records = ref_records or []
-    summaries = summaries or {}
+    # NOTE: summaries is left as-is here — ``None`` means "do not touch the
+    # summaries table" (the bounded-link path refreshes them via SQL after the
+    # delta write), while ``{}`` means "clear it". _refresh_small_tables honors
+    # the distinction.
 
     if touched_files is not None and affected_srcs is not None:
         return _apply_delta_scoped(
@@ -871,21 +987,25 @@ def _refresh_small_tables(
     root: Path,
     options_hash: str,
     discrepancies: list[Discrepancy],
-    summaries: dict[str, str],
+    summaries: dict[str, str] | None,
 ) -> None:
     """Wholesale-refresh the small tables both delta paths share.
 
     ``discrepancies`` and ``summaries`` are a handful of rows (enrich findings;
     the two whole-design JSON blobs), and ``meta`` is five keys — cheaper to
-    rewrite than to diff.
+    rewrite than to diff. ``summaries=None`` leaves the summaries table
+    untouched (the bounded-link path rewrites it via SQL after the delta write).
     """
     conn.execute("DELETE FROM discrepancies")
     conn.executemany(
         "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [_discrepancy_row(d) for d in discrepancies],
     )
-    conn.execute("DELETE FROM summaries")
-    conn.executemany("INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items()))
+    if summaries is not None:
+        conn.execute("DELETE FROM summaries")
+        conn.executemany(
+            "INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items())
+        )
     conn.executemany(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", _meta_rows(root, options_hash)
     )
@@ -900,7 +1020,7 @@ def _apply_delta_scoped(
     options_hash: str,
     discrepancies: list[Discrepancy],
     ref_records: list[RefRecord],
-    summaries: dict[str, str],
+    summaries: dict[str, str] | None,
     touched_files: set[str],
     affected_srcs: set[str],
 ) -> dict[str, int]:

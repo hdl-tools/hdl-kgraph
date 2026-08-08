@@ -148,3 +148,36 @@ def test_unknown_filelist_options_warn_but_build(project: Path) -> None:
     result = build(project, "-f", str(project / "tb.f"))
     assert result.exit_code == 0
     assert "unknown option '-sv' skipped" in result.output  # stderr is mixed in
+
+
+def _outside_root_tree(tmp_path: Path) -> tuple[Path, Path]:
+    """Build root with a filelist pointing at a source above it; returns (root, filelist)."""
+    root = tmp_path / "proj"
+    shared = tmp_path / "shared"
+    (shared).mkdir(parents=True)
+    (shared / "foo.sv").write_text("module foo; endmodule\n")
+    root.mkdir(parents=True)
+    fl = root / "tb.f"
+    fl.write_text("../shared/foo.sv\n")
+    return root, fl
+
+
+def test_outside_root_source_dropped_by_default(tmp_path: Path) -> None:
+    root, fl = _outside_root_tree(tmp_path)
+    result = build(root, "-f", str(fl))
+    # The only listed source escapes the build root, so nothing parses (#68).
+    assert "escapes the build root" in result.output
+    assert result.exit_code != 0
+    assert "no parseable HDL files" in result.output
+
+
+def test_allow_outside_root_parses_external_source(tmp_path: Path) -> None:
+    root, fl = _outside_root_tree(tmp_path)
+    result = build(root, "-f", str(fl), "--allow-outside-root")
+    assert result.exit_code == 0, result.output
+    assert "escapes the build root" not in result.output
+    assert "files parsed:   1" in result.output
+
+    graph, _, _ = load(root)
+    # The out-of-root file is recorded under a `..`-relative path.
+    assert "../shared/foo.sv::module:foo" in graph

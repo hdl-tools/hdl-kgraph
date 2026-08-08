@@ -55,6 +55,407 @@ the major version, and schema changes ship with a migration.
   hydrating the graph, so a caller needing only the source inventory does not
   pay for a whole-graph `load()`.
 
+- **SLN scenario scanning (M10 — final wedge).** `.sln` Cadence Perspec System
+  Level Notation (the `e`/Specman dialect: `<' … '>`, `extend <unit>`,
+  `action <name>`, `>sub_action` invocations, `.field == value` constraints) is
+  parsed by a best-effort line/regex scan. Each `action` → an `ACTION` node;
+  every `>`-invocation is recorded on `attrs["invokes"]` and resolved two ways in
+  pass 2 (skip-don't-stub): a new **`INVOKES`** edge to a same-file action
+  (composition), and a `TEST_COVERS` edge to a design module/instance the name
+  matches (the scenario→DUT coverage signal). `extend` units and constraints are
+  kept in attrs. `.sln` is content-sniffed against the
+  `Microsoft Visual Studio Solution File` header so VS solutions are skipped
+  (`visual_studio_solution`). Adds the `INVOKES` `EdgeKind` (additive — `edges.kind`
+  is a TEXT column, so no `SCHEMA_VERSION` bump / migration). **This completes the
+  M10 EDA-flow-language track** (SDC/XDC, UPF, Tcl flow, Perl, SLN). See
+  docs/extraction.md.
+
+- **Perl codegen-lineage scanning (M10 — fourth wedge).** `.pl`/`.pm` scripts
+  are scanned by a line/regex pass (scope is legacy codegen, not Perl
+  semantics): a parenthesized `open(...)` of an HDL path becomes a
+  `REFERENCES_FILE` edge with `attrs["mode"]` = `read`/`write` (3-arg and 2-arg
+  forms handled, trailing `or die` ignored, interpolated `"$dir/x.v"` paths
+  skipped). A script with a Verilog body (`module`…`endmodule`) is flagged a
+  generator, and every HDL file it writes gets a `GENERATED_FROM` edge **from the
+  generated file back to the script**. Resolution reuses the flow-script file
+  binding (real `FILE` node when in the build, else a non-shadowing
+  `unresolved:file:` stub), so `_resolve_file_ref` now also handles the reversed
+  `GENERATED_FROM` direction. Schema unchanged (`REFERENCES_FILE`,
+  `GENERATED_FROM`, and the `PERL` language already existed). SLN remains a
+  fail-loud stub — the last M10 wedge. See docs/extraction.md.
+- **Tcl flow-script scanning (M10 — third wedge).** `.tcl` flow scripts are
+  parsed by the shared Tcl-subset scanner (no evaluation; only literal `set`
+  substitution): the file-reading commands `read_verilog`/`read_systemverilog`/
+  `read_vhdl`/`read_sdc`/`read_xdc`/`read_upf`/`analyze`/`add_files`/`source`
+  become `REFERENCES_FILE` edges to the file each names, with `attrs["mode"]`
+  recording the kind (`read`/`analyze`/`add`/`source`). A path argument is told
+  from a flag value heuristically (directory separator or recognized HDL/script
+  suffix). Paths are resolved relative to the script and normalized to the
+  build-root keyspace; pass 2 binds an in-build reference to its real `FILE`
+  node and an out-of-tree/missing one to an `unresolved:file:` stub (a distinct
+  id, so it never shadows a real `FILE` node or raises a dangling-endpoint
+  warning). Like the other Tcl wedges, `update` re-links a flow-bearing design
+  fully. Schema unchanged (`REFERENCES_FILE` and the `TCL` language already
+  existed). Perl and SLN remain fail-loud stubs. See docs/extraction.md.
+- **UPF power-intent parsing (M10 — second wedge).** `.upf` files are parsed by
+  the same hand-written Tcl-subset scanner as SDC (now sharing one base parser):
+  `create_power_domain` → `POWER_DOMAIN` nodes (`language=tcl`), its `-elements`
+  → `CONSTRAINS` edges to the named instances (reusing the SDC `cells` query, so
+  exact unique match 1.0 / glob 0.8 / ambiguous 0.6; the `.` design-root element
+  is recorded but not edged), and `-supply` plus the `set_isolation`/
+  `set_retention`/`set_level_shifter` strategies (matched to their `-domain`)
+  folded into the domain's `attrs`. A new **power-domain report** (`power_domains`
+  query / MCP tool, persisted summary with an out-of-core SQL fallback, and an
+  `analyze` digest line) lists each domain with its resolved element instances and
+  whether it is isolated. `.upf` is discovered and, like SDC, forces a full
+  `update` re-link. Schema unchanged (`POWER_DOMAIN`, `CONSTRAINS`, and the `TCL`
+  language already existed). Tcl flow scripts, Perl, and SLN remain fail-loud
+  stubs. See docs/extraction.md and docs/analyses.md.
+- **SDC/XDC timing-constraint parsing (M10 — first wedge, [#25]).** `.sdc`/`.xdc`
+  files are parsed by a hand-written Tcl-subset scanner (no Tcl evaluation; only
+  literal `set` variable substitution): `create_clock`/`create_generated_clock`
+  → `CLOCK` nodes (virtual and generated clocks supported, `language=tcl`);
+  `set_false_path`/`set_multicycle_path`/`set_input_delay`/`set_output_delay`/
+  `set_clock_groups` → `TIMING_CONSTRAINT` nodes. `get_ports`/`get_pins`/
+  `get_cells`/`get_clocks` object queries resolve to design nodes via
+  `CONSTRAINS` edges (exact match 1.0, glob 0.8 unique / 0.6 ambiguous; an
+  object the design lacks is skipped, not stubbed). M5 synergy: `create_clock`
+  is authoritative clock evidence — it upgrades the 0.4 `CLOCKED_BY` name
+  heuristic to 1.0 (`attrs["evidence"]="sdc_create_clock"`); `set_clock_groups
+  -asynchronous` and `set_false_path` mark the CDC suspects they cover as
+  `declared_safe`, which the `clock_domains`/`cdc` report partitions out of the
+  active suspect list (reported as `cdc_suppressed_count`). Because resolution is
+  cross-file and the clock upgrade is design-wide, `update` re-links an
+  SDC-bearing design fully (still parse-incremental, like cocotb/VHDL). Schema
+  unchanged (`CLOCK`/`TIMING_CONSTRAINT`, `CONSTRAINS`, and the `TCL` language
+  already existed). UPF, Tcl flow scripts, Perl, and SLN remain fail-loud stubs.
+  See docs/extraction.md.
+
+### Fixed
+
+- **Absolute file-ref paths now resolve (#164).** Tcl-flow (`read_verilog`/
+  `analyze`/`source`/…) and Perl (`open(...)`) references written as an
+  **absolute** path that points inside the analyzed tree previously always
+  degraded to an `unresolved:file:` stub, since `FILE` nodes live in a
+  build-root-relative keyspace. The pass-2 linker now threads the build root and
+  canonicalizes an in-tree absolute target onto that keyspace before lookup, so
+  it binds to the real `FILE` node. Out-of-tree absolutes (and
+  `$var`-interpolated paths) are unchanged — still unresolved.
+## [2.4.0] - 2026-06-23
+
+### Added
+
+- **cocotb testbench scanning (M8 — Python boundary).** `.py` files that mention
+  `cocotb` (discovery content-sniffs for it, so ordinary Python stays out of the
+  graph) are parsed with `tree-sitter-python`: each `@cocotb.test` function
+  becomes a `FUNCTION` node (`language=python`) linked to the DUT it exercises —
+  a `TEST_COVERS` edge to the DUT module (0.4) and `READS`/`DRIVES` edges (0.6)
+  for each `dut.<signal>` access (`dut.sig.value = …` / `setimmediatevalue` are
+  `DRIVES`, other reads are `READS`), resolved against the DUT module's
+  ports/signals. The DUT is heuristic — the configured `[build].top` module(s)
+  when set, else a filename guess (`test_fifo.py` → `fifo`). Because the DUT link
+  is cross-file, `update` re-links a cocotb design fully (still parse-incremental,
+  like VHDL). New core dependency: `tree-sitter-python`. Schema unchanged
+  (`TEST_COVERS`/`READS`/`DRIVES` and the `PYTHON` language already existed).
+
+## [2.3.0] - 2026-06-23
+
+### Added
+
+- **DPI-C linking (M8 — C/C++ boundary).** `.c`/`.h` (tree-sitter-c) and
+  `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx` (tree-sitter-cpp) sources are now
+  discovered and parsed into `FUNCTION` nodes, and SystemVerilog
+  `import "DPI-C"`/`export "DPI-C"` declarations are linked to their foreign
+  function definitions via `FOREIGN_BINDS` edges — matched by linkage name (the
+  `c_name = function …` alias when present), filtered to C/C++ candidates, at
+  the usual confidence tier (0.8 for a unique cross-file match; an unresolved
+  name degrades to a stub). C/C++ bypass the SV preprocessor; bare-name matching
+  is the contract (no C++ mangling, no C preprocessor). The graph schema is
+  unchanged (`FOREIGN_BINDS` and the `C`/`CPP` languages already existed), so no
+  migration or re-parse is forced. See `docs/extraction.md`. New core
+  dependencies: `tree-sitter-c`, `tree-sitter-cpp`.
+
+## [2.2.0] - 2026-06-22
+
+### Fixed
+
+- **`query modules` and `reset-tree` no longer full-load the graph** — the last two `query`
+  subcommands still calling `SqliteStore.load()`. They now answer through the bounded `GraphQuery`
+  path, so (like the rest of the `query` surface since 2.0/2.1) their cost tracks the answer, not the
+  design size — no more O(design) RAM on large netlists. With this, **no `query` command full-loads
+  the graph**.
+
+### Added
+
+- `GraphQuery.modules()` (every MODULE/ENTITY + instantiation count, bounded) and
+  `GraphQuery.reset_tree()`, backed by a new out-of-core `storage/summaries.py:reset_summary_sql`
+  that mirrors `clock_summary_sql` (the same net-alias union-find over SQLite), byte-identical to the
+  `graph/clocks.py:reset_tree` oracle.
+
+### Changed
+
+- `query reset-tree` labels each reset net by **name** (+ aliases) rather than the root's
+  `qualified_name`, matching the bounded `clock-domains` report (2.0.0); the reset processes' qualified
+  names are still shown (resolved with a bounded lookup). `--json` is unchanged.
+- `query modules` orders same-named units deterministically by `(name, file, line)` (previously
+  name-only, tie-broken by load order) — only affects the rare case of a shared unit name (e.g. a VHDL
+  entity and an SV module both named `leaf`).
+
+## [2.1.0] - 2026-06-21
+
+### Fixed
+
+- **`query instances-of` / `drivers` / `unresolved` no longer full-load the graph.** These CLI
+  commands still called `SqliteStore.load()`, so on a large design they materialised the whole
+  `MultiDiGraph` — e.g. on a 22 GB / 2.6 M-node netlist, `query drivers` and `query unresolved` hit
+  ~15 GB RSS, ~16 M block reads, and 4–7 minutes (often OOM). They now answer through the bounded
+  `GraphQuery` path (the same one the MCP tools and the v2.0 report commands use), hydrating only the
+  queried nodes and their relevant edges — output is **byte-identical** (parity-tested), with latency
+  tracking the answer size, not the design size. This completes the M12.5 routing for the
+  single-target `query` commands; `modules` and `reset-tree` are the remaining full-load commands
+  (separate follow-up).
+
+### Added
+
+- `GraphQuery.instances_of()`, `signal_drivers()`, and `unresolved_stubs()` — bounded, full-list
+  (unpaginated) variants of the existing report methods, consumed by the CLI; the paginated MCP
+  methods (`who_instantiates` / `find_signal_drivers`) now delegate to them.
+
+## [2.0.0] - 2026-06-21
+
+**v2.0 — the out-of-core, bounded-RAM architecture, delivered without a Rust core.**
+
+The v2.0 goal (issue #128) was to break the in-memory-graph RAM ceiling so 10–100 GB designs stay
+usable — originally envisioned as a bespoke PyO3 Rust core. Profiling and spikes (M11/M12) showed an
+off-the-shelf out-of-core layer clears the wall, so v2 instead landed **incrementally, behind the
+existing Python `storage` seam**, as backward-compatible releases 1.8 → 1.15: bounded index-backed
+reads (`GraphQuery`), out-of-core whole-design summaries (M12.5: 1.9/1.10), and the memory-bounded
+incremental linker — bounded re-link as the default (1.12/1.13), selective IR decode (1.14), and
+out-of-core TEST_COVERS re-derivation (1.15). Reads, summaries, linker re-resolution, IR decode, and
+TEST_COVERS are now all bounded by the dirty closure / structural subgraph; a 100 GB design loads via
+the out-of-core path. **The Rust core (M13) is deferred — off the critical path for the RAM goal.**
+This release marks v2 delivered; the one breaking change below is what tips the version to 2.0.0.
+
+### Changed (breaking)
+
+- The CLI whole-design report commands now answer from the **bounded out-of-core path**
+  (`GraphQuery`), never `SqliteStore.load()` — completing the M12.5 routing (the MCP tools already
+  did). As a result their output aligns with the bounded summary payload the MCP server serves:
+  - **`query clock-domains --json`** now emits the summary payload
+    `{"domains": [...], "cdc_suspect_count": N, "cdc_suspects": [...]}` (each domain carries
+    `clock`/`aliases`/`process_count`/`signal_count`/`min_confidence`) **instead of** the previous
+    list of full `ClockDomain` objects with their O(design) `process_ids`/`signal_ids` arrays. The
+    text report labels each domain by its **clock net name** (+ aliases), not the node's
+    `qualified_name`.
+  - **`query cdc`** is now bounded to the **top-50** suspects (matching the persisted summary); its
+    text output preserves `read by <qualified_name>` via a bounded id→name lookup.
+  - **`query uvm`** is unchanged (byte-identical text and `--json`).
+  `reset-tree` and the single-target queries (`instances-of`/`modules`/`drivers`/`unresolved`) are
+  unchanged.
+
+## [1.15.0] - 2026-06-21
+
+### Fixed
+
+- **TEST_COVERS edges on incremental `update`** (#119). TEST_COVERS is a cross-file relation — a
+  `tb_*` top / `uvm_test` class covers DUT modules anywhere in the design — so the src-scoped delta
+  write could not keep it consistent: the bounded (default) re-link never re-derived it (dropping a
+  tb-top's coverage edges on edit), and the in-memory path derived it in-graph but the scoped write
+  silently dropped the edges whose src lay outside the dirty closure. Both paths now re-derive the
+  whole TEST_COVERS set **out-of-core** after the scoped write (`storage.summaries.test_covers_sql`
+  hydrates only the structural subgraph — MODULE/ENTITY/INSTANCE/CLASS nodes + DECLARES/
+  INSTANTIATES/EXTENDS edges, never the dataflow bulk — and runs the *same* `derive_test_covers`),
+  then reconcile it (`SqliteStore.replace_test_covers`). UVM/testbench designs stay bounded and the
+  result is **byte-identical** to a full `build`. Pure-SV designs (no `tb_*`/`uvm_test`) are
+  unaffected. The equivalence + fuzz suite now includes UVM edit shapes under both link paths.
+
+## [1.14.0] - 2026-06-21
+
+### Changed
+
+- **Selective IR decode** on the bounded (default) `update` path (#119) clears the last
+  O(design)-RAM step. `update` no longer decodes *every* clean unit's stored IR: clean units are
+  replayed from the small `macro_events` column only (the compile-order prerequisite for dirty
+  re-parses), and just the dirty units plus the *affected* clean units the bounded linker
+  re-resolves have their full IR blob decoded. The resident IR set is now O(dirty closure), not
+  O(design), so the whole `update` pipeline — reads, summaries, linker re-resolution, and IR
+  decode — is bounded without a Rust core. The result stays **byte-identical** to a full `build`
+  (the equivalence + fuzz suite runs over both link paths). Bind/configuration directives still
+  need every unit's IR, so that case transparently retries with the full-decode path;
+  `--no-bounded-link`, VHDL, and enrich keep the previous full-decode flow. See
+  [docs/scalability.md](docs/scalability.md).
+
+## [1.13.0] - 2026-06-20
+
+### Changed
+
+- The memory-bounded incremental re-link (#119) is now the **default** for `hdl-kgraph update`:
+  an incremental `update` re-resolves the dirty closure straight from SQLite instead of loading
+  the whole prior graph, removing the last O(design)-RAM step from the common `update` path. The
+  result is byte-identical to a full `build` (the equivalence + fuzz suite runs over both paths).
+  Pass `--no-bounded-link` to fall back to the previous in-memory re-link. VHDL / binds / enrich
+  still fall back to a full re-link regardless. (Introduced opt-in as `--bounded-link` in 1.12.0.)
+
+### Added
+
+- `hdl-kgraph update --bounded-link` (opt-in, experimental) re-links incrementally **without
+  loading the whole prior graph** (#119). It re-resolves the dirty closure straight from SQLite —
+  the unchanged resolution engine fed by lazy `idx_nodes_kind_name`/`idx_edges_*` lookups, with a
+  bounded stub-GC over only the stub neighbourhood — and writes the same scoped delta. The default
+  `update` path is unchanged; the result is **byte-identical** to a full `build`, now pinned by
+  `tests/test_incremental_equivalence.py` parametrized over **both** link paths (including the
+  randomized fuzz). This removes the last O(design)-RAM step from `update` on the opt-in path; a
+  later release will flip it to the default. See [docs/scalability.md](docs/scalability.md).
+
+## [1.11.0] - 2026-06-20
+
+### Added
+
+- `hdl-kgraph bench-link [--json] [--sample N]` reports **incremental-link locality** — how many
+  pass-2 references a single-file edit re-resolves vs a full re-link, as a content-free
+  distribution (`reresolved_refs` and `locality_ratio` p50/p90/max). Computed from a built
+  `graph.db` alone (the persisted `ref_index` + include/macro dependency graph), so it runs
+  post-install with no source tree; a low ratio quantifies how much a memory-bounded incremental
+  linker (#119) would save on a given design. The byte-identical correctness of an actual bounded
+  re-link is validated separately by the M13 spike (`scripts/spike_m13_link.py`,
+  [docs/v2/m13_link_spike.md](docs/v2/m13_link_spike.md)).
+
+## [1.10.0] - 2026-06-20
+
+### Changed
+
+- UVM-topology reports are now served **out-of-core** when the persisted whole-design
+  summary is absent — the companion change to 1.9.0's clock/CDC fallback. Previously a
+  database with no `uvm_topology` summary fell back to loading the **entire** graph into
+  memory to recompute it. `GraphQuery.uvm_topology()` now hydrates only the bounded class
+  subgraph (CLASS nodes + EXTENDS/TEST_COVERS edges) and runs the same analysis on it
+  (`storage/summaries.py`), with results byte-identical to the NetworkX path. Both
+  whole-design summaries (clock/CDC and UVM) are now bounded.
+
+## [1.9.0] - 2026-06-20
+
+### Changed
+
+- Clock-domain / CDC reports are now served **out-of-core** when the persisted whole-design
+  summary is absent. Previously a database with no `clock_domains` summary (one migrated from
+  a pre-v8 schema, or any build that did not persist it) fell back to loading the **entire**
+  graph into memory to recompute the report — the O(design)-RAM wall. The `GraphQuery` reader
+  now computes it directly from SQLite instead (`storage/summaries.py`), with results
+  byte-identical to the NetworkX path. UVM topology keeps the full-load fallback for now.
+
+## [1.8.0] - 2026-06-20
+
+### Added
+
+- `hdl-kgraph review [--json] [--metrics]` emits a **content-free review digest** of a
+  built graph — counts, ratios, distributions, and build timings, with **no identifiers**
+  (no module/clock/signal names, file paths, or expression text). It's designed to be
+  snapshotted out of an isolated/air-gapped environment (where the source and `graph.db`
+  cannot leave) and **diffed across builds** to review parse health, link quality, design
+  shape, and performance. The digest consolidates the `meta`/`files` tables, node/edge-kind
+  histograms, unresolved-stub ratio, edge-confidence distribution, and the persisted
+  clock/CDC/UVM summaries as counts; `--metrics` adds fan-in/hub/community metrics (values
+  only). See [docs/review.md](docs/review.md).
+- `build`/`update` now persist content-free build telemetry (`build_stats`: per-phase
+  timings + the `enriched` flag) into the `meta` table, so `review` can report `timings_s`
+  from a static database. Databases built before this release simply report `timings_s:
+  null` (no migration needed — `meta` is key/value).
+
+## [1.7.0] - 2026-06-19
+
+### Added
+
+- `hdl-kgraph merge DB1 DB2 ... --db OUT` assembles several independently-built
+  block databases into one SoC-level graph (IP-block assembly). It unions the
+  per-file IRs across the sources and re-links once, so the result is
+  byte-identical to a monolithic `build` of the same files under the same
+  `--root` (Mode A). All sources must share the build root; FILELIST and VHDL
+  `library` adapter nodes are reconstructed faithfully from each source graph.
+  `--on-conflict error|first|last` controls overlapping files that differ.
+  Enriched source databases are refused (enrich the merged design as a
+  whole-design step instead), and a merged database falls back to a full
+  rebuild on `update`. See [docs/merge-design.md](docs/merge-design.md).
+- **Subtree caching** workflow on top of `merge`: keep each block's database as
+  a cached artifact, rebuild only the block that changed, and re-merge — the
+  unchanged blocks' cached per-file IRs are reused instead of being re-parsed,
+  so the only parse cost paid is for the changed block while the pass-2 link is
+  paid once. `merge` now reports its link/total wall-clock, and
+  `scripts/bench_merge.py` measures the re-parse-only-the-changed-block payoff
+  (see [docs/benchmarks.md](docs/benchmarks.md) and
+  [docs/merge-design.md](docs/merge-design.md)).
+
+## [1.6.0] - 2026-06-19
+
+### Removed
+
+- The 1.5.0 instance-body deduplication in `build --enrich` (and its
+  `walk_bodies` timing line) is removed: measured on two real designs it never
+  fired. slang canonicalizes identical instance bodies in C++, but pyslang
+  returns a fresh wrapper object per `.body` access, so identity-based dedup
+  finds no shared bodies (`walk_instances == unique bodies`, 1.0x, on both a
+  small CPU block and a multi-million-instance SoC). Outputs were always
+  identical; the change was simply inert, so it is reverted to keep the walk
+  honest. The pass-3 profiling (`slang/walk_*`, `walk_instances`) from 1.4.0 is
+  retained. See [docs/benchmarks.md](docs/benchmarks.md).
+
+## [1.5.0] - 2026-06-19
+
+### Changed
+
+- Enrichment (`build --enrich`) skips re-descending into instance bodies it has
+  already walked. slang canonicalizes identical instance bodies (same module +
+  parameters share one body), but the pass-3 elaborated-tree walk previously
+  re-walked every duplicate — the dominant build cost on unroll-heavy designs
+  (a wide instance array walked the same body once per element). The walk now
+  descends into each unique body once and records the rest at their parent
+  level; output is unchanged (the `children` map is keyed by definition and
+  folded by max, and parameterized specializations keep distinct bodies). The
+  `--timings` breakdown gains a `walk_bodies` line (unique bodies + dedup
+  factor). See [docs/benchmarks.md](docs/benchmarks.md).
+
+## [1.4.0] - 2026-06-19
+
+### Added
+
+- `build --enrich --timings` now splits the dominant `slang/walk_tree` phase
+  into `slang/walk_members` (forcing slang's lazy member elaboration) and
+  `slang/walk_hierpath` (reconstructing each instance's `hierarchicalPath`), and
+  reports `walk_instances` — the count of elaborated instances visited with the
+  derived per-instance cost. This pinpoints whether the elaborated-tree walk is
+  super-linear (rising cost per instance) and which term to optimize. Measured
+  with bare `perf_counter` accumulators so the per-node instrumentation does not
+  distort the hot loop. See [docs/benchmarks.md](docs/benchmarks.md).
+
+## [1.3.0] - 2026-06-18
+
+### Added
+
+- `build --enrich --timings` now breaks the `enrich (pass 3)` line into its
+  internal phases (slang parse / `getRoot` elaboration / elaborated-tree walk /
+  summarize / graph delta-apply), so it is clear which part of elaboration
+  dominates. Collected by a near-free `perf_counter` profiler on the real code
+  path (`hdl_kgraph.enrich._profile`). See [docs/benchmarks.md](docs/benchmarks.md).
+- [docs/merge-design.md](docs/merge-design.md): design proposal for a
+  `hdl-kgraph merge` command (IP-block assembly + subtree caching), scoped from
+  the `--timings` evidence — merge the per-file IRs and re-link once, with
+  enrichment kept as a post-merge whole-design step.
+
+## [1.2.0] - 2026-06-17
+
+### Added
+
+- `build`/`update`/`watch` gain `--allow-outside-root`: an opt-in flag that
+  honors filelist source/`-v`/`-y`/`-f` and `+incdir+` tokens resolving outside
+  the build root instead of dropping them. The default keeps the #68
+  containment (out-of-tree tokens dropped with a warning); use the flag only
+  with filelists you trust.
+- `build --timings`: prints a per-phase wall-clock breakdown (discover, parse
+  [pass 0+1], link [pass 2], enrich, persist) plus a parallelizable-vs-serial
+  summary. A capacity-planning aid for deciding whether a distributed build +
+  database merge would pay off — the discover+parse work is per-partition
+  parallelizable, while the pass-2 link is paid once over the combined graph.
+  See [docs/benchmarks.md](docs/benchmarks.md).
+
 ## [Released - pypi]
 
 ## [1.1.0] - 2026-06-16
@@ -392,7 +793,13 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.1...v1.0.0
 [0.16.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.0...v0.16.1
@@ -433,4 +840,5 @@ log.
 [#75]: https://github.com/chuanseng-ng/hdl-kgraph/issues/75
 [#78]: https://github.com/chuanseng-ng/hdl-kgraph/pull/78
 [#81]: https://github.com/chuanseng-ng/hdl-kgraph/issues/81
+[#25]: https://github.com/chuanseng-ng/hdl-kgraph/issues/25
 [#108]: https://github.com/chuanseng-ng/hdl-kgraph/pull/108

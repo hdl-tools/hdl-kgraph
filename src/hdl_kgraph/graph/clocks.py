@@ -26,12 +26,13 @@ Everything here is name-level and evidence-scored — no elaboration:
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
 
-from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.schema import CONFIDENCE_RESOLVED, EdgeKind, NodeKind
 
 
 @dataclass
@@ -69,6 +70,10 @@ class CdcSuspect:
     reader_id: str
     reader_domain: str
     confidence: float
+    #: True when an SDC constraint (``set_clock_groups -asynchronous`` or a
+    #: ``set_false_path`` covering the crossing) declares this crossing safe;
+    #: the report suppresses these from the active suspect list (M10).
+    declared_safe: bool = False
 
 
 class _UnionFind:
@@ -128,6 +133,96 @@ def _formal_port(g: nx.MultiDiGraph, inst_id: str, port_name: str) -> str | None
     return None
 
 
+def _clock_net_roots(g: nx.MultiDiGraph, uf: _UnionFind) -> dict[str, set[str]]:
+    """CLOCK node id → alias-roots of the PORT/SIGNAL nets it constrains (M10).
+
+    A non-virtual ``create_clock``/``create_generated_clock`` carries a
+    CONSTRAINS edge to the net it is defined on; the net's alias-root is the
+    domain that clock authoritatively names.
+    """
+    roots: dict[str, set[str]] = defaultdict(set)
+    for clock_id, target, _data in _edges(g, EdgeKind.CONSTRAINS):
+        if g.nodes[clock_id]["kind"] is not NodeKind.CLOCK:
+            continue
+        if g.nodes[target]["kind"] in (NodeKind.PORT, NodeKind.SIGNAL):
+            roots[clock_id].add(uf.find(target))
+    return roots
+
+
+def apply_sdc_clock_evidence(g: nx.MultiDiGraph) -> None:
+    """Upgrade CLOCKED_BY confidence to 1.0 for clocks an SDC ``create_clock`` names.
+
+    SDC ``create_clock`` is authoritative clock evidence (ROADMAP M10): every
+    CLOCKED_BY edge whose clock target shares an alias-root with a ``create_clock``
+    net is promoted from the M5 name heuristic (0.4) to 1.0 and stamped
+    ``attrs["evidence"] = "sdc_create_clock"``. Mutates *g* in place; a no-op when
+    no SDC clocks are present, so it is safe to call on every link.
+    """
+    uf = net_aliases(g)
+    backed: set[str] = set()
+    for nets in _clock_net_roots(g, uf).values():
+        backed |= nets
+    if not backed:
+        return
+    for _src, clock, data in _edges(g, EdgeKind.CLOCKED_BY):
+        if uf.find(clock) in backed and data["confidence"] < CONFIDENCE_RESOLVED:
+            data["confidence"] = CONFIDENCE_RESOLVED
+            data["attrs"] = {**data["attrs"], "evidence": "sdc_create_clock"}
+
+
+def _declared_safe_crossings(
+    g: nx.MultiDiGraph, uf: _UnionFind
+) -> tuple[set[frozenset[str]], set[tuple[str, str]], set[str]]:
+    """SDC-declared safe crossings (M10): ``(async clock-root pairs, directional
+    false-path clock pairs, false-path net roots)``.
+
+    ``set_clock_groups -asynchronous`` makes every cross-group clock-root pair
+    safe in *both* directions (the bare form with no ``-group`` declares all
+    clocks mutually asynchronous). A clock-to-clock ``set_false_path`` is
+    *directional* — ``-from A -to B`` declares only the A→B crossing safe, not
+    B→A — so its pairs are kept ordered and matched against the crossing's
+    (driver, reader) direction at the call site. A port/signal ``set_false_path``
+    endpoint marks that net's root safe directly.
+    """
+    clock_roots = _clock_net_roots(g, uf)
+    name_roots: dict[str, set[str]] = defaultdict(set)
+    for clock_id, nets in clock_roots.items():
+        name_roots[g.nodes[clock_id]["name"]] |= nets
+    all_clock_roots: set[str] = set().union(*clock_roots.values()) if clock_roots else set()
+
+    async_pairs: set[frozenset[str]] = set()
+    false_path_pairs: set[tuple[str, str]] = set()
+    false_path_roots: set[str] = set()
+    for tc_id, attrs in (
+        (n, d["attrs"]) for n, d in g.nodes(data=True) if d["kind"] is NodeKind.TIMING_CONSTRAINT
+    ):
+        set_type = attrs.get("set_type")
+        if set_type == "clock_groups" and attrs.get("asynchronous"):
+            groups = [
+                set().union(*(name_roots.get(name, set()) for name in grp)) if grp else set()
+                for grp in (attrs.get("groups") or [])
+            ]
+            if not groups:
+                # Bare ``-asynchronous`` (no -group): all clocks mutually async.
+                groups = [{root} for root in sorted(all_clock_roots)]
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    async_pairs.update(frozenset((a, b)) for a in groups[i] for b in groups[j])
+        elif set_type == "false_path":
+            from_roots: set[str] = set()
+            to_roots: set[str] = set()
+            for _, tgt, data in g.out_edges(tc_id, data=True):
+                if data["kind"] is not EdgeKind.CONSTRAINS:
+                    continue
+                role = data["attrs"].get("role")
+                if g.nodes[tgt]["kind"] is NodeKind.CLOCK:
+                    (from_roots if role == "from" else to_roots).update(clock_roots.get(tgt, set()))
+                elif g.nodes[tgt]["kind"] in (NodeKind.PORT, NodeKind.SIGNAL):
+                    false_path_roots.add(uf.find(tgt))
+            false_path_pairs.update((a, b) for a in from_roots for b in to_roots)
+    return async_pairs, false_path_pairs, false_path_roots
+
+
 def clock_domains(g: nx.MultiDiGraph) -> list[ClockDomain]:
     """Every clock domain: nets named by CLOCKED_BY edges, alias-merged."""
     uf = net_aliases(g)
@@ -174,8 +269,14 @@ def reset_tree(g: nx.MultiDiGraph) -> list[ResetGroup]:
 
 
 def cdc_suspects(g: nx.MultiDiGraph) -> list[CdcSuspect]:
-    """Signals driven in one domain and read by a process in another."""
+    """Signals driven in one domain and read by a process in another.
+
+    A crossing an SDC constraint declares safe (``set_clock_groups
+    -asynchronous`` / ``set_false_path``) is still returned, flagged
+    ``declared_safe`` — the report partitions it out of the active list (M10).
+    """
     uf = net_aliases(g)
+    async_pairs, false_path_pairs, false_path_roots = _declared_safe_crossings(g, uf)
 
     # Process -> its unique domain (root, confidence); ambiguous ones skipped.
     proc_domain: dict[str, tuple[str, float]] = {}
@@ -238,6 +339,14 @@ def cdc_suspects(g: nx.MultiDiGraph) -> list[CdcSuspect]:
                 if root == reader_root:
                     continue
                 node = g.nodes[sig]
+                # ``root`` is the driver (launch) domain, ``reader_root`` the
+                # reader (capture) domain: a directional false path must match
+                # the (driver, reader) order; clock groups suppress both ways.
+                declared_safe = (
+                    frozenset((root, reader_root)) in async_pairs
+                    or (root, reader_root) in false_path_pairs
+                    or sig in false_path_roots
+                )
                 suspects.append(
                     CdcSuspect(
                         signal_id=sig,
@@ -249,6 +358,7 @@ def cdc_suspects(g: nx.MultiDiGraph) -> list[CdcSuspect]:
                         reader_id=proc,
                         reader_domain=g.nodes[reader_root]["name"],
                         confidence=min(conf, rconf, reader_conf),
+                        declared_safe=declared_safe,
                     )
                 )
     return sorted(suspects, key=lambda s: (s.signal_name, s.reader_id, s.driver_domain))

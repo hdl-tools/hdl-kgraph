@@ -1,11 +1,18 @@
-"""hdl-kgraph CLI: the ``bench`` subcommand group.
+"""hdl-kgraph CLI: the benchmark commands.
 
-Measures the claim ``hdl-kgraph setup`` writes into every assistant's
-instruction file — "query the graph instead of grepping the raw RTL" — against
-the user's own design, rather than asking them to take it on faith. The three
-subcommands are three different kinds of evidence, with three different costs:
-``context`` and ``fidelity`` are deterministic, offline, and free; ``agent``
-spends real money on live model runs and is non-deterministic by construction.
+Two independent things live here, both measuring the tool rather than the
+design:
+
+* ``bench-link`` — incremental-link *locality*: how much of the design a
+  single-file edit re-resolves. Content-free, reads a built ``graph.db``.
+* ``bench`` — what the graph is worth to an AI assistant: token cost per
+  question against a grep baseline (``context``), answer correctness against
+  hand-written ground truth (``fidelity``), and a live Claude Code A/B
+  (``agent``). ``context`` and ``fidelity`` are deterministic, offline, and
+  free; ``agent`` spends real money and is non-deterministic by construction.
+
+``bench-link`` stays a top-level command rather than becoming ``bench link``:
+it is already public surface, and folding it in would rename it.
 """
 
 from __future__ import annotations
@@ -23,7 +30,51 @@ from hdl_kgraph.bench.tokens import TOKENIZERS, make_estimator
 from hdl_kgraph.cli._common import CliError, _resolve_db
 from hdl_kgraph.cli._options import _db_option, _json_option
 from hdl_kgraph.cli.render import emit_json
+from hdl_kgraph.linkbench import link_locality
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError
+
+
+@click.command("bench-link")
+@_db_option
+@_json_option
+@click.option(
+    "--sample",
+    type=int,
+    default=None,
+    help="Evaluate only N files (evenly strided) for a quick estimate on large designs.",
+)
+def bench_link(db_path: Path | None, as_json: bool, sample: int | None) -> None:
+    """Report incremental-link locality — how much of the design a single-file
+    edit re-resolves vs a full re-link.
+
+    Content-free (counts and ratios only). A low ``locality_ratio`` means a
+    bounded incremental linker (#119) would re-resolve only a small fraction of
+    the refs per edit; a ratio near 1 means edits ripple design-wide. Computed
+    from the persisted ``ref_index`` + include/macro dependency graph, so it runs
+    on a built ``graph.db`` with no source tree.
+    """
+    db = _resolve_db(db_path)
+    try:
+        report = link_locality(db, sample=sample)
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
+    if as_json:
+        emit_json(report)
+        return
+    t = report["totals"]
+    rr = report["reresolved_refs"]
+    lr = report["locality_ratio"]
+    click.echo(f"hdl-kgraph bench-link (schema {report['schema']}, content-free)")
+    click.echo(f"  files {t['files']}  refs {t['refs']}  nodes {t['nodes']}  edges {t['edges']}")
+    click.echo(
+        f"  refs re-resolved per single-file edit: "
+        f"p50 {rr['p50']:.0f}  p90 {rr['p90']:.0f}  max {rr['max']:.0f}  mean {rr['mean']:.1f}"
+    )
+    click.echo(
+        f"  locality ratio (re-resolved / full re-link): "
+        f"p50 {lr['p50']:.2%}  p90 {lr['p90']:.2%}  max {lr['max']:.2%}"
+    )
+    click.echo("  (use --json for the full content-free report)")
 
 
 @click.group()

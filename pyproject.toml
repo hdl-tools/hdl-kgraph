@@ -43,6 +43,9 @@ dependencies = [
   "tree-sitter>=0.23,<0.26",
   "tree-sitter-systemverilog>=0.3.1,<0.4",
   "tree-sitter-vhdl>=1.5,<2",
+  "tree-sitter-c>=0.23,<0.25",
+  "tree-sitter-cpp>=0.23,<0.24",
+  "tree-sitter-python>=0.23,<0.26",
   'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -66,6 +69,11 @@ enrich = ["pyslang>=8,<12", "pyVHDLModel>=0.28,<1"]
 # prices both arms, the savings *ratio* barely moves — this buys accuracy in
 # the absolute numbers, not a different conclusion.
 bench = ["tiktoken>=0.7"]
+# v2 graph-layer spike (M12, #128) — evaluation-only, used solely by
+# scripts/spike_m12.py to measure candidate graph backends, never by the package
+# or the test suite. rustworkx and kuzu are native/compiled wheels, so they are
+# upper-bounded like the other native deps.
+spike = ["rustworkx>=0.14,<1", "kuzu>=0.6,<1"]
 dev = [
   "pytest>=8",
   "pytest-cov",
@@ -91,6 +99,9 @@ packages = ["src/hdl_kgraph"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Test fixtures are deliberately minimal/odd input (e.g. cocotb testbenches with
+# intentionally "unused" reads); they are data, not linted code.
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -106,6 +117,9 @@ module = [
   "tree_sitter.*",
   "tree_sitter_systemverilog.*",
   "tree_sitter_vhdl.*",
+  "tree_sitter_c.*",
+  "tree_sitter_cpp.*",
+  "tree_sitter_python.*",
   "networkx.*",
   "numpy.*",
   "scipy.*",
@@ -131,6 +145,9 @@ follow_imports_for_stubs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Fixture files (e.g. cocotb testbenches named ``test_*.py``) are inputs to the
+# parser, not pytest tests — don't collect them.
+norecursedirs = ["tests/fixtures"]
 
 [tool.coverage.run]
 # Branch coverage (not just line) so the resilience/degradation paths — a

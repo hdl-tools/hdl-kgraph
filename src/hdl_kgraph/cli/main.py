@@ -19,12 +19,14 @@ from hdl_kgraph.cli.analyze import (
     impact,
     lint_cmd,
     metrics_cmd,
+    review,
     status,
     tree,
     visualize,
 )
-from hdl_kgraph.cli.bench import bench
+from hdl_kgraph.cli.bench import bench, bench_link
 from hdl_kgraph.cli.build import build, update, watch
+from hdl_kgraph.cli.merge import merge
 from hdl_kgraph.cli.query import query
 from hdl_kgraph.cli.serve import serve, setup
 from hdl_kgraph.cli.tools import tools
@@ -50,10 +52,14 @@ def main() -> None:
 for _cmd in (
     build,
     update,
+    merge,
     watch,
     detect_changes,
     impact,
     status,
+    review,
+    bench_link,
+    bench,
     discrepancies,
     enriched,
     lint_cmd,
@@ -65,6 +71,5 @@ for _cmd in (
     setup,
     query,
     tools,
-    bench,
 ):
     main.add_command(_cmd)

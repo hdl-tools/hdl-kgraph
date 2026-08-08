@@ -15,8 +15,10 @@ incremental, `save_incremental` reads and rewrites only the dirty closure's
 rows (the touched files' nodes/edges, fileless stubs, and the re-resolved
 clean references) rather than diffing the whole `nodes`/`edges` tables — so a
 one-file edit touches ~0.04 % of the rows on the 2000-file corpus. The result
-is byte-identical to a full rebuild. The remaining whole-graph cost (the
-incremental linker still loading the prior graph) is the documented ceiling in
+is byte-identical to a full rebuild. As of v2.0 the incremental link is itself
+memory-bounded by default: it re-resolves the dirty closure straight from SQLite
+(selective IR decode, out-of-core `TEST_COVERS`) instead of loading the prior
+graph, so neither the read nor the write scales with the design — see
 [scalability.md](scalability.md).
 
 A change to the effective build inputs (defines, incdirs, filelists,

@@ -17,7 +17,7 @@ from typing import Any
 
 import networkx as nx
 
-from hdl_kgraph.graph import clocks, uvm
+from hdl_kgraph.graph import clocks, power, uvm
 
 
 def jsonable(value: Any) -> Any:
@@ -48,10 +48,26 @@ def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
         for d in clocks.clock_domains(graph)
     ]
     suspects = clocks.cdc_suspects(graph)
+    active = [s for s in suspects if not s.declared_safe]
+    suppressed = [s for s in suspects if s.declared_safe]
     return {
         "domains": domains,
-        "cdc_suspect_count": len(suspects),
-        "cdc_suspects": jsonable(suspects[:50]),
+        "cdc_suspect_count": len(active),
+        "cdc_suspects": jsonable(active[:50]),
+        # Crossings an SDC constraint declares safe — reported, not silently
+        # dropped, so a suppressed crossing stays visible (M10).
+        "cdc_suppressed_count": len(suppressed),
+        "cdc_suppressed": jsonable(suppressed[:50]),
+    }
+
+
+def power_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
+    """The ``power_domains`` tool payload: UPF domains, elements, strategies (M10)."""
+    domains = power.power_domains(graph)
+    return {
+        "domain_count": len(domains),
+        "isolated_count": sum(1 for d in domains if d.isolated),
+        "domains": jsonable(domains[:50]),
     }
 
 
@@ -66,6 +82,7 @@ def uvm_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
 #: name -> builder, the single registry the build iterates and the reader keys on.
 BUILDERS = {
     "clock_domains": clock_summary,
+    "power_domains": power_summary,
     "uvm_topology": uvm_summary,
 }
 

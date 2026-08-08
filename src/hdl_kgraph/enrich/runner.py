@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import networkx as nx
 
+from hdl_kgraph.enrich import _profile
 from hdl_kgraph.enrich.base import (
     EnrichmentBackend,
     EnrichmentInput,
@@ -43,49 +44,62 @@ def run_enrichment(
 ) -> EnrichmentReport:
     """Run each backend over *inp* and apply its delta to *graph* in place."""
     report = EnrichmentReport()
-    for backend in backends:
-        files = [p for p in inp.files if p.suffix in backend.suffixes]
-        if not files:
-            continue
-        result = backend.enrich(
-            EnrichmentInput(
-                files=files,
-                defines=inp.defines,
-                incdirs=inp.incdirs,
-                tops=inp.tops,
-                base=inp.base,
-                vhdl_libraries=inp.vhdl_libraries,
-            ),
-            graph,
-        )
-        report.backends.append(backend.name)
-        for node in result.new_nodes:
-            before = graph.number_of_nodes()
-            ensure_node(graph, node)
-            report.nodes_added += graph.number_of_nodes() - before
-        for edge in result.new_edges:
-            # New elaborated edges between nodes the backend just added (or the
-            # existing module endpoints); upgrade=True so a re-run is a no-op.
-            add_or_upgrade_edge(graph, edge, upgrade=True)
-        for upgrade in result.upgrades:
-            if not (graph.has_node(upgrade.src) and graph.has_node(upgrade.dst)):
+    timer = _profile.PhaseTimer()
+    _profile.set_active(timer)
+    try:
+        for backend in backends:
+            files = [p for p in inp.files if p.suffix in backend.suffixes]
+            if not files:
                 continue
-            upgraded = add_or_upgrade_edge(
-                graph,
-                Edge(
-                    src=upgrade.src,
-                    dst=upgrade.dst,
-                    kind=upgrade.kind,
-                    confidence=upgrade.confidence,
-                    attrs=upgrade.attrs,
-                ),
-                upgrade=True,
-            )
-            if upgraded:
-                report.edges_upgraded += 1
-        for node_id, extra in result.node_annotations.items():
-            if graph.has_node(node_id):
-                graph.nodes[node_id]["attrs"].update(extra)
-        report.discrepancies.extend(result.discrepancies)
-        report.diagnostics.extend(result.diagnostics)
+            # Top-level spans tile the pass: ``{name}:enrich`` is the backend's
+            # own elaboration (which self-instruments detail children), and
+            # ``{name}:apply`` is the graph delta-apply the runner owns.
+            with timer.span(f"{backend.name}:enrich"):
+                result = backend.enrich(
+                    EnrichmentInput(
+                        files=files,
+                        defines=inp.defines,
+                        incdirs=inp.incdirs,
+                        tops=inp.tops,
+                        base=inp.base,
+                        vhdl_libraries=inp.vhdl_libraries,
+                    ),
+                    graph,
+                )
+            report.backends.append(backend.name)
+            with timer.span(f"{backend.name}:apply"):
+                for node in result.new_nodes:
+                    before = graph.number_of_nodes()
+                    ensure_node(graph, node)
+                    report.nodes_added += graph.number_of_nodes() - before
+                for edge in result.new_edges:
+                    # New elaborated edges between nodes the backend just added
+                    # (or the existing module endpoints); upgrade=True so a
+                    # re-run is a no-op.
+                    add_or_upgrade_edge(graph, edge, upgrade=True)
+                for upgrade in result.upgrades:
+                    if not (graph.has_node(upgrade.src) and graph.has_node(upgrade.dst)):
+                        continue
+                    upgraded = add_or_upgrade_edge(
+                        graph,
+                        Edge(
+                            src=upgrade.src,
+                            dst=upgrade.dst,
+                            kind=upgrade.kind,
+                            confidence=upgrade.confidence,
+                            attrs=upgrade.attrs,
+                        ),
+                        upgrade=True,
+                    )
+                    if upgraded:
+                        report.edges_upgraded += 1
+                for node_id, extra in result.node_annotations.items():
+                    if graph.has_node(node_id):
+                        graph.nodes[node_id]["attrs"].update(extra)
+            report.discrepancies.extend(result.discrepancies)
+            report.diagnostics.extend(result.diagnostics)
+    finally:
+        _profile.set_active(None)
+    report.phase_timings = dict(timer.totals)
+    report.phase_counts = dict(timer.counts)
     return report

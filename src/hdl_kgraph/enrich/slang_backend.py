@@ -29,11 +29,13 @@ value upgrades are a documented follow-on within M7.
 from __future__ import annotations
 
 from collections import defaultdict
+from time import perf_counter
 from typing import Any
 
 import networkx as nx
 
 from hdl_kgraph.enrich._graphutil import enclosing_module, instantiates_target
+from hdl_kgraph.enrich._profile import add, count, phase
 from hdl_kgraph.enrich.base import (
     Capabilities,
     Discrepancy,
@@ -79,7 +81,8 @@ class SlangBackend:
             return result
         if children is None:
             return result
-        _reconcile(graph, children, result)
+        with phase("slang/reconcile"):
+            _reconcile(graph, children, result)
         return result
 
 
@@ -96,31 +99,38 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
     from pyslang.parsing import PreprocessorOptions
     from pyslang.syntax import SyntaxTree
 
-    pp = PreprocessorOptions()
-    pp.predefines = [
-        f"{name}={value}" if value is not None else name for name, value in inp.defines.items()
-    ]
-    pp.additionalIncludePaths = [str(d) for d in inp.incdirs]
-    tree_bag = pyslang.Bag([pp])
+    with phase("slang/setup"):
+        pp = PreprocessorOptions()
+        pp.predefines = [
+            f"{name}={value}" if value is not None else name for name, value in inp.defines.items()
+        ]
+        pp.additionalIncludePaths = [str(d) for d in inp.incdirs]
+        tree_bag = pyslang.Bag([pp])
 
-    comp_opts = CompilationOptions()
-    if inp.tops:
-        comp_opts.topModules = set(inp.tops)
-    comp = Compilation(pyslang.Bag([comp_opts]))
+        comp_opts = CompilationOptions()
+        if inp.tops:
+            comp_opts.topModules = set(inp.tops)
+        comp = Compilation(pyslang.Bag([comp_opts]))
+        source_manager = pyslang.SourceManager()
 
-    source_manager = pyslang.SourceManager()
     added = 0
-    for path in inp.files:
-        try:
-            comp.addSyntaxTree(SyntaxTree.fromFile(str(path), source_manager, tree_bag))
-            added += 1
-        except Exception as exc:
-            result.diagnostics.append(f"slang: could not read {path} ({exc})")
+    with phase("slang/parse_trees"):
+        for path in inp.files:
+            try:
+                comp.addSyntaxTree(SyntaxTree.fromFile(str(path), source_manager, tree_bag))
+                added += 1
+            except Exception as exc:
+                result.diagnostics.append(f"slang: could not read {path} ({exc})")
     if not added:
         return None
 
-    root = comp.getRoot()
-    error_count = sum(1 for d in comp.getAllDiagnostics() if _is_error(d))
+    # ``getRoot`` forces elaboration; ``getAllDiagnostics`` then realizes any
+    # deferred elaboration diagnostics — both are prime suspects for the pass's
+    # cost, so they are timed apart from the Python-side tree walk below.
+    with phase("slang/elaborate_root"):
+        root = comp.getRoot()
+    with phase("slang/diagnostics"):
+        error_count = sum(1 for d in comp.getAllDiagnostics() if _is_error(d))
     if error_count:
         result.diagnostics.append(
             f"slang: {error_count} elaboration diagnostic(s); "
@@ -143,31 +153,57 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
         except TypeError:
             return []
 
+    # Hot loop: ``walk`` runs once per elaborated instance (generate-unrolled),
+    # so it dominates the enrichment pass on large designs. The two suspected
+    # costs — forcing lazy member elaboration (``members``) and reconstructing
+    # each instance's hierarchical-path string (``hierarchicalPath``) — are timed
+    # with bare perf_counter accumulators (not ``phase()`` per node, whose
+    # context-manager overhead would itself distort a per-instance measurement),
+    # then recorded once below. ``inst`` counts instances so the CLI can report
+    # per-instance cost. See docs/benchmarks.md and slang_backend profiling.
+    walk_members_s = 0.0
+    walk_path_s = 0.0
+    inst = 0
+
     def walk(scope: Any, container_path: str, container_def: str) -> None:
+        nonlocal walk_members_s, walk_path_s, inst
         container_def_of[container_path] = container_def
-        for m in members(scope):
+        _t = perf_counter()
+        scope_members = members(scope)
+        walk_members_s += perf_counter() - _t
+        for m in scope_members:
             kind = getattr(m, "kind", None)
             if kind == SymbolKind.Instance:
+                inst += 1
                 child_def = m.definition.name if getattr(m, "definition", None) else ""
+                _t = perf_counter()
                 path = m.hierarchicalPath
+                walk_path_s += perf_counter() - _t
                 suffix = path[len(container_path) + 1 :] if container_path else path
                 per_instance[container_path].setdefault((m.name, child_def), []).append(suffix)
                 walk(getattr(m, "body", m), path, child_def)
             elif kind in (SymbolKind.GenerateBlock, SymbolKind.GenerateBlockArray):
                 walk(m, container_path, container_def)
 
-    for top in root.topInstances:
-        top_def = top.definition.name if getattr(top, "definition", None) else top.name
-        walk(getattr(top, "body", top), top.hierarchicalPath, top_def)
+    with phase("slang/walk_tree"):
+        for top in root.topInstances:
+            top_def = top.definition.name if getattr(top, "definition", None) else top.name
+            walk(getattr(top, "body", top), top.hierarchicalPath, top_def)
+    # Sub-breakdown of walk_tree: members (lazy elaboration) vs hierarchicalPath
+    # (string reconstruction) vs the residual (pure Python recursion).
+    add("slang/walk_members", walk_members_s)
+    add("slang/walk_hierpath", walk_path_s)
+    count("walk_instances", inst)
 
-    children: _ChildMap = {}
-    for container_path, groups in per_instance.items():
-        container_def = container_def_of[container_path]
-        for (base, child_def), suffixes in groups.items():
-            target_map = children.setdefault((container_def, base), {})
-            rel_paths = [f"{container_def}.{suffix}" for suffix in suffixes]
-            if len(rel_paths) > len(target_map.get(child_def, [])):
-                target_map[child_def] = rel_paths
+    with phase("slang/summarize"):
+        children: _ChildMap = {}
+        for container_path, groups in per_instance.items():
+            container_def = container_def_of[container_path]
+            for (base, child_def), suffixes in groups.items():
+                target_map = children.setdefault((container_def, base), {})
+                rel_paths = [f"{container_def}.{suffix}" for suffix in suffixes]
+                if len(rel_paths) > len(target_map.get(child_def, [])):
+                    target_map[child_def] = rel_paths
     return children
 
 

@@ -47,6 +47,14 @@ _jobs_option = click.option(
     "builds, otherwise one per CPU up to a cap; 1 = always serial).",
 )
 
+_allow_outside_root_option = click.option(
+    "--allow-outside-root",
+    is_flag=True,
+    help="Honor filelist source/-v/-y/-f and +incdir+ tokens that resolve "
+    "outside the build root instead of dropping them. Relaxes the default "
+    "containment (#68); only use with filelists you trust.",
+)
+
 _enrich_option = click.option(
     "--enrich",
     is_flag=True,

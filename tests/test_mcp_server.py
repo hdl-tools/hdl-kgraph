@@ -1,4 +1,4 @@
-"""MCP server tests (M6): the nine tools over an in-memory fastmcp client.
+"""MCP server tests (M6): the ten tools over an in-memory fastmcp client.
 
 Skipped entirely when fastmcp (the ``[mcp]`` extra) is not installed; the
 underlying analysis functions have their own fastmcp-free tests.
@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "clock_domains",
     "find_signal_drivers",
     "uvm_topology",
+    "power_domains",
     "search_nodes",
 }
 
@@ -65,7 +66,7 @@ def _list_tools(server: Any) -> set[str]:
     return asyncio.run(go())
 
 
-def test_all_nine_tools_listed(server: Any) -> None:
+def test_all_ten_tools_listed(server: Any) -> None:
     assert _list_tools(server) == EXPECTED_TOOLS
 
 

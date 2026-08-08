@@ -11,6 +11,7 @@ hdl-kgraph query cdc               # signals driven in domain A, read in domain 
 hdl-kgraph query reset-tree        # async vs (heuristic) sync resets
 hdl-kgraph query drivers ready     # what drives signal 'ready' (--readers flips it)
 hdl-kgraph query uvm               # UVM components by role + TEST_COVERS links
+hdl-kgraph query power-domains     # UPF power domains, elements + strategies
 hdl-kgraph lint                    # unconnected ports, undriven/unread signals,
                                    #   dead modules, redundant parameter overrides
 hdl-kgraph metrics --communities   # fan-in/out, hubs/bridges, Louvain subsystems
@@ -25,8 +26,15 @@ graphml|gexf|json`).
 ## Caveats — reports, not gates
 
 - **CDC findings are *suspects*, not violations** — synchronizers are not
-  recognized (SDC `set_clock_groups` suppression lands with M10). Review
-  each finding.
+  recognized, so a proper 2-flop sync still shows up. An SDC `set_clock_groups
+  -asynchronous` or `set_false_path` covering a crossing marks it
+  `declared_safe`, and the report partitions it out of the active list (a
+  `cdc_suppressed_count` keeps it visible); everything else is worth reviewing.
+- **Power domains** (`query power-domains`, UPF M10) list each
+  `create_power_domain` with its resolved element instances and its
+  isolation/retention strategies — the power-intent analogue of the
+  clock-domain report. A `.upf` element the design lacks (or the `.`
+  design-root element) is reported unresolved rather than invented.
 - **`lint` always exits 0**; it is a report, not a gate. Signal-level
   checks skip files with parse errors and implicit-net stubs so a finding
   is worth reading; confidences below 1.0 mark heuristics.

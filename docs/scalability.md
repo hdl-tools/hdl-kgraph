@@ -30,10 +30,19 @@ that small graph — so results are byte-identical to the full-graph path
 | `get_hierarchy(top)` | BFS over `DECLARES`/`INSTANTIATES`/`IMPLEMENTS`, capped by depth/nodes |
 | `get_hierarchy()` (tops) | pure SQL set-difference: no incoming `INSTANTIATES` |
 | `impact_of_change` | hydrate only the reverse-dependency closure `impact_radius` walks |
-| `find_signal_drivers` | signals by name, then their `DRIVES`/`READS` edges |
+| `find_signal_drivers` | signals by name, then only their `DRIVES` *or* `READS` edges |
+| `unresolved_stubs` | unresolved-`nodes` scan + only those stubs' referrer edges |
+| `modules` | indexed `MODULE`/`ENTITY` scan + each unit's incoming `INSTANTIATES` count |
 
 Each call opens a fresh read connection, so a concurrent `update`/`watch` swap
 is always observed — no cache, no staleness window.
+
+As of v2.2.0 **every** CLI `query` subcommand is answered through this bounded
+path — `instances-of`, `modules`, `drivers`, `unresolved`, and the whole-design
+reports (`clock-domains`/`cdc`/`uvm`/`reset-tree`, below) — so no `query` command
+ever calls `SqliteStore.load()`. (The routing landed incrementally: the reports in
+v2.0.0, `instances-of`/`drivers`/`unresolved` in v2.1.0, `modules`/`reset-tree` in
+v2.2.0.)
 
 A localized query is 1000–16000× faster than the old per-call load and its
 latency tracks the *answer* size, not the design size (see
@@ -43,13 +52,35 @@ is intrinsic, not a regression.
 
 ## Whole-design summaries: precomputed, not re-scanned
 
-Clock-domain/CDC and UVM-topology reports scan every `CLOCKED_BY`/`DRIVES`/
-`READS`/`EXTENDS` edge, so they cannot be bounded. Instead the build computes
-them once — while the graph is already in memory — and persists the result to
-the `summaries` table (`graph/summary.py`); the MCP tools read a small JSON blob
-in well under a millisecond at any design size. The build computes them on a
-full `build` and refreshes them on `update` (a database older than schema v8 has
-no summaries table, so the reader falls back to a one-off full load).
+Clock-domain/CDC, reset-tree, and UVM-topology reports scan global relations
+(`CLOCKED_BY`/`RESETS`/`DRIVES`/`READS`/`EXTENDS`), not a single query's local
+neighbourhood. The build computes the clock/CDC and UVM summaries once — while the
+graph is already in memory — and persists them to the `summaries` table
+(`graph/summary.py`); the MCP tools **and the CLI `query clock-domains`/`cdc`/`uvm`
+commands** read that small JSON blob through `GraphQuery` in well under a
+millisecond at any design size (since v2.0.0 the CLI no longer full-loads the graph
+for these reports). The build computes them on a full `build` and refreshes them on
+`update`. When the persisted blob is absent — and always for `reset-tree`, which is
+not persisted — the reader recomputes out-of-core (below), never via
+`SqliteStore.load()`.
+
+When the persisted summary is **absent** — a database older than schema v8 (no
+summaries table), or any build that did not persist it — the reader falls back to
+recomputing the report, and both summary families now do so **out-of-core**
+(`storage/summaries.py`), byte-identically to the NetworkX path
+(`tests/test_summaries_sql.py` pins the parity):
+
+- **Clock domains / CDC** (`clock_summary_sql`): computed straight from SQLite — the
+  net-alias union-find reduces to connected components over the derived dataflow edges,
+  reusing `clocks._UnionFind` over a SQL-derived pair list — without ever materializing
+  the graph (validated on a real design in [v2/m12_real_design.md](v2/m12_real_design.md)).
+- **Reset tree** (`reset_summary_sql`): `RESETS` edges grouped by canonical reset net via
+  the *same* net-alias union-find as the clock report — bounded by the `RESETS` edges plus
+  the alias pairs. Computed this way on every call (there is no persisted reset summary);
+  the CLI resolves the reset processes' qualified names with a bounded id lookup.
+- **UVM topology** (`uvm_summary_sql`): hydrates only the bounded *class* subgraph (CLASS
+  nodes plus `EXTENDS`/`TEST_COVERS` edges) and runs the same `graph/uvm.py` functions on
+  it — the report only ever touches the class inheritance graph, not the whole design.
 
 ## Writes
 
@@ -74,20 +105,63 @@ tables as before — correct for any graph.
 
 ### Remaining ceiling (known)
 
-Three parts of the `update` *pipeline* are still O(design) in memory:
+Parts of the `update` *pipeline* were O(design) in memory:
 
-1. the incremental linker loads the full prior graph (`SqliteStore.load()`) to
-   re-resolve the dirty closure;
-2. `update` decodes *every* clean unit's stored IR (`pipeline._reuse_unit`), not
-   just the dirty/affected ones;
-3. the precomputed summaries are recomputed over the whole graph each update.
+1. the incremental linker loaded the full prior graph (`SqliteStore.load()`) to
+   re-resolve the dirty closure — **addressed: bounded re-link is the default
+   since v1.13.0 (`--no-bounded-link` opts out), below**;
+2. `update` decoded *every* clean unit's stored IR (`pipeline._reuse_unit`), not
+   just the dirty/affected ones — **addressed: selective IR decode is the default
+   since v1.14.0, below**;
+3. the precomputed summaries are recomputed over the whole graph each update —
+   the bounded path refreshes them out-of-core via the M12.5 SQL scans instead.
 
-The delta *diff* is now bounded (above), so (1) — making `link_incremental`
-re-resolve the dirty closure without holding the entire prior graph in memory —
-is the dominant remaining work for true 100 GB incremental `update`.
+The delta *diff* is bounded (above); item (1) — re-resolving the dirty closure
+without holding the entire prior graph — was the dominant remaining work for true
+100 GB incremental `update`. With items (1) and (2) both addressed on the default
+path, the whole `update` pipeline — reads, summaries, linker re-resolution, and IR
+decode — is now bounded.
 
-**Why it is all-or-nothing (not a cheap slice).** You cannot simply load a
-lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge
+**Bounded incremental re-link — the default since v1.13.0.**
+`graph/bounded_link.py` re-resolves the dirty closure **without
+`SqliteStore.load()`**: the *unchanged* `_Linker._resolve` is fed lazy SQL-backed
+indexes (`idx_nodes_kind_name`/`idx_edges_*`), `_gc_orphan_stubs` runs over just
+the stub neighbourhood, the result is written as the existing scoped delta
+(`_apply_delta_scoped`), and the whole-design summaries + report counts are read
+back from the DB (M12.5 SQL scans). It is **byte-identical** to a full `build` —
+`tests/test_incremental_equivalence.py` is parametrized over both link paths
+(in-memory and bounded), including the randomized fuzz. On the real RV32I SoC a
+single-file edit re-resolves ~1.9 k rows vs a 14 k-row full load; `hdl-kgraph
+bench-link` reports the per-design locality (a median edit re-resolves ~0.4 % of
+refs there). The dev spike (`scripts/spike_m13_link.py`,
+[v2/m13_link_spike.md](v2/m13_link_spike.md)) proved the kernels first.
+`hdl-kgraph update` now takes this path by default; `--no-bounded-link` falls back
+to the in-memory re-link. So item (1) is bounded on the default path. Scope is
+the SV incremental path (`incremental_link_safe`); VHDL / binds / enrich fall back
+to a full re-link, flag or not.
+
+**Selective IR decode — the default since v1.14.0 (item (2)).** The bounded path
+no longer decodes every clean unit's stored IR. `run_update` loads only the small
+`macro_events`/`included` columns for clean units (`SqliteStore.load_macro_events`,
+**not** the big `ir` blob); the compile-order loop *replays each clean unit's macros*
+into the shared `MacroTable` — the prerequisite for dirty re-parses to see earlier
+`` `define``s — but skips `ir_from_json`. Only the dirty units (parsed fresh) and
+the *affected* clean units the bounded linker re-resolves have their full IR decoded
+(`SqliteStore.load_units_for`, fetched on demand in compile order). The affected set
+is bounded by the dirty closure, so the resident IR set is O(closure), not O(design),
+and `link_incremental_bounded` reads `node_file`/`ref_records` only for the live refs'
+srcs — byte-identical to the full-decode path for every key actually read. Clean units'
+preprocessor warnings and parse-error telemetry are carried forward from the preserved
+`files` rows (`load_file_warnings`/`load_file_errors`) rather than re-derived. Bind/
+configuration directives need every unit's IR for a full re-link, so that case raises
+`_SelectiveLinkUnavailable` and transparently retries with the legacy full-decode path;
+`--no-bounded-link`, VHDL, and enrich keep the full-decode flow. The decode-count is
+pinned by `tests/test_bounded_link.py` and the byte-identical gate by
+`tests/test_incremental_equivalence.py` (both link paths, incl. fuzz). With items (1)
+and (2) both bounded on the default path, the v2 RAM goal is met without a Rust core.
+
+**Why it had to land as one architecture (not a cheap slice).** You cannot simply
+load a lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge
 bulk). Several steps read the *whole* graph and are entangled:
 
 - `_gc_orphan_stubs` (`graph/builder.py`) keeps an unresolved stub alive iff it
@@ -95,15 +169,23 @@ bulk). Several steps read the *whole* graph and are entangled:
   `CLOCKED_BY`/… So dropping the dataflow edges would make a stub anchored only
   by a clean dataflow edge look orphaned and get deleted — a non-byte-identical,
   corrupt result.
-- `derive_test_covers` (`graph/uvm.py`) scans the whole graph each link to find
-  `tb_*` tops and their instantiation subtrees.
+- `derive_test_covers` (`graph/uvm.py`) is a whole-design, cross-file relation
+  (a `tb_*` top / `uvm_test` class covers DUTs anywhere), so the src-scoped delta
+  write cannot keep it consistent. Since v1.15.0 the incremental paths re-derive
+  the **whole** TEST_COVERS set out-of-core after the scoped write
+  (`storage/summaries.py:test_covers_sql` hydrates only the structural subgraph —
+  MODULE/ENTITY/INSTANCE/CLASS + DECLARES/INSTANTIATES/EXTENDS, never the dataflow
+  bulk — and runs the same `derive_test_covers`), then reconcile it
+  (`SqliteStore.replace_test_covers`). Byte-identical, bounded by the structural
+  subgraph.
 - the definitions/`children` seeding and `report.edge_count` read all
   nodes/edges.
 
-So a memory-bounded linker must land as one architecture — SQL-backed name
-resolution (`idx_nodes_kind_name`), SQL-aware stub-GC, an incremental
-`derive_test_covers`, selective IR decode, and a delta-only output (which the
-existing `_apply_delta_scoped` already consumes) — all gated by the
-byte-identical fuzz suite. It is a large, high-risk change to the core
-resolution engine for a payoff that only bites at the extreme, so it is
-deliberately deferred: reads and the write *diff* are already bounded.
+So the memory-bounded linker landed as one architecture — SQL-backed name
+resolution (`idx_nodes_kind_name`), SQL-aware stub-GC (over only the stub
+neighbourhood), out-of-core summaries + counts, selective IR decode, an
+out-of-core TEST_COVERS re-derivation, and a delta-only output (which the existing
+`_apply_delta_scoped` consumes) — all gated by the byte-identical fuzz suite. It
+shipped incrementally (opt-in `--bounded-link` in v1.12.0, default in v1.13.0,
+selective IR decode in v1.14.0, bounded TEST_COVERS in v1.15.0); reads and the
+write *diff* were already bounded before it.

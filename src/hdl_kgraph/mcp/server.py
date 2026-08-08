@@ -161,6 +161,10 @@ def _uvm_impl(g: nx.MultiDiGraph) -> dict[str, Any]:
     return summary.uvm_summary(g)
 
 
+def _power_domains_impl(g: nx.MultiDiGraph) -> dict[str, Any]:
+    return summary.power_summary(g)
+
+
 def _validate_kinds(kinds: list[str] | None) -> list[NodeKind] | None:
     """Parse the ``search_nodes`` kind filter, with a helpful error on a typo."""
     if not kinds:
@@ -286,6 +290,12 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
         """UVM components by role (via EXTENDS chains to uvm_* bases) and
         testbench-to-DUT TEST_COVERS links."""
         return ctx.run(lambda q: q.uvm_topology())
+
+    @mcp.tool
+    def power_domains() -> dict[str, Any]:
+        """UPF power domains with their resolved element instances and
+        isolation/retention/level-shifter strategies."""
+        return ctx.run(lambda q: q.power_domains())
 
     @mcp.tool
     def search_nodes(

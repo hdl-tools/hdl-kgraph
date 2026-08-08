@@ -71,17 +71,21 @@ M5 — dataflow, clocks, and verification refs:
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
+from hdl_kgraph.graph.clocks import apply_sdc_clock_evidence
 from hdl_kgraph.graph.uvm import derive_test_covers
 from hdl_kgraph.ids import file_node_id, parse_node_id, stub_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef, within_root
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
     CONFIDENCE_RESOLVED,
@@ -110,6 +114,11 @@ _REF_TARGET_KINDS: dict[EdgeKind, tuple[tuple[NodeKind, ...], tuple[NodeKind, ..
     EdgeKind.IMPLEMENTS: ((NodeKind.ENTITY,), ()),
     EdgeKind.USES_PACKAGE: ((NodeKind.VHDL_PACKAGE,), ()),
     EdgeKind.BINDS: ((NodeKind.ENTITY,), (NodeKind.MODULE,)),
+    # DPI-C: an SV import/export name resolves to a FUNCTION/TASK; the
+    # language filter in ``_resolve_target`` keeps a C definition (import) or
+    # the SV subprogram (export) and discards same-named candidates of the
+    # wrong side.
+    EdgeKind.FOREIGN_BINDS: ((NodeKind.FUNCTION, NodeKind.TASK), ()),
 }
 
 _STUB_KIND: dict[EdgeKind, NodeKind] = {
@@ -121,6 +130,7 @@ _STUB_KIND: dict[EdgeKind, NodeKind] = {
     EdgeKind.IMPLEMENTS: NodeKind.ENTITY,
     EdgeKind.USES_PACKAGE: NodeKind.VHDL_PACKAGE,
     EdgeKind.BINDS: NodeKind.ENTITY,
+    EdgeKind.FOREIGN_BINDS: NodeKind.FUNCTION,
 }
 
 _VHDL_DEFAULT_LIBRARY = "work"
@@ -163,6 +173,11 @@ _PASS2_EDGE_KINDS = frozenset(
         EdgeKind.ASSERTS_ON,
         EdgeKind.COVERS,
         EdgeKind.TEST_COVERS,
+        EdgeKind.FOREIGN_BINDS,
+        EdgeKind.CONSTRAINS,
+        EdgeKind.REFERENCES_FILE,
+        EdgeKind.GENERATED_FROM,
+        EdgeKind.INVOKES,
     }
 )
 #: Edge kinds that come directly from a unit's IR, not from resolution.
@@ -200,6 +215,30 @@ DEFINITION_KINDS: frozenset[NodeKind] = frozenset(
 
 _SIGNAL_KINDS = (NodeKind.PORT, NodeKind.SIGNAL)
 _ASSERTABLE_KINDS = (NodeKind.PROPERTY, NodeKind.SEQUENCE)
+
+#: SDC ``get_*`` query kind → the design NodeKinds a CONSTRAINS ref may resolve
+#: to (M10). ``pins`` is best-effort: a hierarchical pin path degrades to its
+#: leaf signal/port name.
+_CONSTRAINS_QUERY_KINDS: dict[str, tuple[NodeKind, ...]] = {
+    "ports": (NodeKind.PORT,),
+    "clocks": (NodeKind.CLOCK,),
+    "cells": (NodeKind.INSTANCE,),
+    "pins": (NodeKind.PORT, NodeKind.SIGNAL),
+}
+_CONSTRAINS_DEFAULT_KINDS = (NodeKind.PORT, NodeKind.SIGNAL, NodeKind.CLOCK, NodeKind.INSTANCE)
+
+
+def _pin_leaf(pattern: str) -> str:
+    """Leaf signal/port name of a hierarchical pin path (``u_counter/count[0]``
+    → ``count``); a non-hierarchical name is returned unchanged."""
+    leaf = pattern.rsplit("/", 1)[-1]
+    return leaf.split("[", 1)[0]
+
+
+def _is_glob(pattern: str) -> bool:
+    """True if *pattern* carries an SDC/shell glob metacharacter."""
+    return any(ch in pattern for ch in "*?[")
+
 
 #: Port directions → derived instance dataflow ("buffer" is a VHDL output).
 _PORT_DIRECTION_FLOW: dict[str, tuple[EdgeKind, ...]] = {
@@ -316,7 +355,12 @@ def add_or_upgrade_edge(g: nx.MultiDiGraph, edge: Edge, *, upgrade: bool = True)
 
 
 class _Linker:
-    def __init__(self, file_irs: list[FileIR]) -> None:
+    def __init__(self, file_irs: list[FileIR], root: Path | None = None) -> None:
+        # The build root (the dir relpaths are taken against), so a script's
+        # in-tree *absolute* file-ref can be canonicalized onto the relpath
+        # keyspace before lookup (#164). None preserves the legacy behavior:
+        # an absolute target stays verbatim and resolves to an out-of-tree stub.
+        self.root: Path | None = root
         self.graph = nx.MultiDiGraph()
         # (kind, name) -> definition node ids, across all files
         self.definitions: defaultdict[tuple[NodeKind, str], list[str]] = defaultdict(list)
@@ -432,6 +476,21 @@ class _Linker:
             return str(file_node.attrs.get("library", _VHDL_DEFAULT_LIBRARY))
         return _VHDL_DEFAULT_LIBRARY
 
+    def _filter_foreign(self, ref: UnresolvedRef, candidates: list[str]) -> list[str]:
+        """Pick the right side of a DPI-C binding (M8).
+
+        An ``import`` binds to a C/C++ function — drop same-named SV candidates
+        (including the import prototype itself) and prefer a definition over a
+        header prototype. An ``export`` binds to the SV subprogram it names, so
+        keep only the SV/Verilog candidates.
+        """
+        if ref.attrs.get("dpi_export"):
+            langs = (Language.SYSTEMVERILOG, Language.VERILOG)
+            return [c for c in candidates if self.node_obj[c].language in langs]
+        foreign = [c for c in candidates if self.node_obj[c].language in (Language.C, Language.CPP)]
+        defs = [c for c in foreign if self.node_obj[c].attrs.get("is_definition")]
+        return defs or foreign
+
     def _filter_library(self, candidates: list[str], library: str | None, src_id: str) -> list[str]:
         """Narrow ambiguous VHDL candidates to the named library, if that helps."""
         if library is None or len(candidates) <= 1:
@@ -472,6 +531,8 @@ class _Linker:
                 candidates = scoped
         if ref.edge_kind in (EdgeKind.USES_PACKAGE, EdgeKind.BINDS, EdgeKind.IMPLEMENTS):
             candidates = self._filter_library(candidates, ref.attrs.get("library"), ref.src_id)
+        if ref.edge_kind is EdgeKind.FOREIGN_BINDS:
+            candidates = self._filter_foreign(ref, candidates)
         if candidates:
             return (*self._score(candidates, ref.src_id), {})
         cross = self._cross_language(cross_kinds, ref.target_name)
@@ -731,6 +792,163 @@ class _Linker:
         for target in targets:
             self._emit(ref, target, confidence)
 
+    # -- cocotb (M8): resolve against the heuristically-chosen DUT module ---------
+
+    def _modules_named(self, name: str) -> list[str]:
+        """MODULE/ENTITY definitions matching *name* (exact, then case-insensitive)."""
+        exact = list(self.definitions.get((NodeKind.MODULE, name), ())) + list(
+            self.definitions.get((NodeKind.ENTITY, name), ())
+        )
+        if exact:
+            return exact
+        lowered = name.lower()
+        return list(self.definitions_ci.get((NodeKind.MODULE, lowered), ())) + list(
+            self.definitions_ci.get((NodeKind.ENTITY, lowered), ())
+        )
+
+    def _resolve_cocotb(self, ref: UnresolvedRef) -> None:
+        """Resolve a cocotb ref against the DUT module (chosen by config top or
+        filename heuristic in the parser). Unresolved DUT/signal names are
+        skipped, not stubbed — the DUT is a name guess, so a miss should not
+        invent module/signal nodes."""
+        if ref.edge_kind is EdgeKind.TEST_COVERS:
+            for module_id in self._modules_named(ref.target_name):
+                if not self.node_obj[module_id].attrs.get("unresolved"):
+                    self._emit(ref, module_id, ref.confidence)
+            return
+        # READS / DRIVES: resolve dut.<signal> against the DUT module's namespace,
+        # collapsing the same ambiguities the scoped resolver does (a both-branches
+        # arm wins over its alternatives; a non-ANSI ``output y; wire y;`` is one
+        # net, the PORT — not two edges).
+        dut_name = str(ref.attrs.get("dut_module", ""))
+        for module_id in self._modules_named(dut_name):
+            if self.node_obj[module_id].attrs.get("unresolved"):
+                continue
+            matches = self._scope_index_for(module_id).get(ref.target_name, [])
+            signals = [n for n in matches if n.kind in _SIGNAL_KINDS]
+            if not signals:
+                continue
+            selected = [n for n in signals if not n.attrs.get("conditional")] or signals
+            ports = [n for n in selected if n.kind is NodeKind.PORT]
+            if len(ports) == 1:
+                selected = ports
+            for sig in selected:
+                self._emit(ref, sig.id, ref.confidence)
+
+    def _resolve_sln(self, ref: UnresolvedRef) -> None:
+        """Resolve an SLN action invocation (M10), skip-don't-stub.
+
+        INVOKES binds to a same-file ACTION; TEST_COVERS binds to a design
+        MODULE/ENTITY/INSTANCE the invoked name matches (the coverage signal).
+        Most invoked names are testbench sequences matching neither — kept only
+        on the action's ``attrs["invokes"]`` — so they resolve to no edge.
+        """
+        name = ref.target_name
+        if ref.edge_kind is EdgeKind.INVOKES:
+            src_file = self.node_file.get(ref.src_id)
+            for action_id in self.definitions.get((NodeKind.ACTION, name), ()):
+                if action_id != ref.src_id and self.node_file.get(action_id) == src_file:
+                    self._emit(ref, action_id, CONFIDENCE_RESOLVED)
+            return
+        # TEST_COVERS: a design module/entity (reuse _modules_named) or instance.
+        # Cross-file name match, so score it by the normal contract (unique 0.8,
+        # ambiguous 0.6) rather than forcing full confidence.
+        targets = [
+            t
+            for t in self._modules_named(name)
+            + list(self.definitions.get((NodeKind.INSTANCE, name), ()))
+            if not self.node_obj[t].attrs.get("unresolved")
+        ]
+        if not targets:
+            return
+        scored, confidence = self._score(targets, ref.src_id)
+        for target in scored:
+            self._emit(ref, target, confidence)
+
+    # -- SDC/XDC constraints (M10): resolve get_ports/pins/cells/clocks ----------
+
+    def _glob_targets(self, kinds: tuple[NodeKind, ...], pattern: str) -> list[str]:
+        """Definition ids of *kinds* whose name matches the SDC glob *pattern*."""
+        wanted = set(kinds)
+        out: list[str] = []
+        for (kind, name), ids in self.definitions.items():
+            if kind in wanted and fnmatch.fnmatchcase(name, pattern):
+                out.extend(ids)
+        return out
+
+    def _resolve_constrains(self, ref: UnresolvedRef) -> None:
+        """Resolve a CONSTRAINS ref (an SDC object query) to design nodes.
+
+        Exact unique match resolves at 1.0; a glob's unique match at 0.8 and a
+        glob/exact tie at 0.6 (ROADMAP M10). An object the design never declares
+        is skipped, not stubbed — a constraint may legitimately name a pin that
+        this RTL slice does not contain, and inventing a node would mislead.
+        """
+        query = str(ref.attrs.get("query", ""))
+        kinds = _CONSTRAINS_QUERY_KINDS.get(query, _CONSTRAINS_DEFAULT_KINDS)
+        name = _pin_leaf(ref.target_name) if query == "pins" else ref.target_name
+        if _is_glob(name):
+            matches = self._glob_targets(kinds, name)
+            if not matches:
+                return
+            confidence = CONFIDENCE_UNIQUE_MATCH if len(matches) == 1 else CONFIDENCE_AMBIGUOUS
+            for target in matches:
+                self._emit(ref, target, confidence)
+            return
+        candidates: list[str] = []
+        for kind in kinds:
+            candidates.extend(self.definitions.get((kind, name), ()))
+        if not candidates:
+            return  # constraint names an object absent from this design: skip
+        confidence = CONFIDENCE_RESOLVED if len(candidates) == 1 else CONFIDENCE_AMBIGUOUS
+        for target in candidates:
+            self._emit(ref, target, confidence)
+
+    def _canonical_file_target(self, target: str) -> str:
+        """Map a file-ref target onto the build-root relpath keyspace (#164).
+
+        Relative targets are already normalized by the parser. An *absolute*
+        target inside the build root is relativized so it binds to the real
+        FILE node (whose id is ``file:{relpath}``); an out-of-tree absolute (or
+        when no root is known) is returned verbatim, so it still resolves to an
+        ``unresolved:file:`` stub — the prior behavior.
+
+        Absoluteness is judged with the platform-native ``os.path.isabs`` so a
+        Windows drive path (``D:/proj/top.v``) — which ``posixpath`` does not
+        treat as absolute — is canonicalized too, not just POSIX ``/...`` paths.
+        """
+        if self.root is None or not os.path.isabs(target):
+            return target
+        path = Path(target)
+        if within_root(path, self.root):
+            return path.resolve().relative_to(self.root.resolve()).as_posix()
+        return target
+
+    def _resolve_file_ref(self, ref: UnresolvedRef) -> None:
+        """Resolve a script file reference (M10) to a FILE node by relpath.
+
+        ``target_name`` is normalized to the build-root POSIX relpath keyspace
+        (an in-tree absolute path is canonicalized by
+        :meth:`_canonical_file_target`, #164). It binds to the existing
+        ``file:`` node when that file is part of the build; otherwise the script
+        references a file outside the analyzed set (a generated or out-of-tree
+        source), which materializes as an ``unresolved:file:`` stub — a distinct
+        id, so it never shadows a real FILE node.
+
+        ``REFERENCES_FILE`` points script → file. ``GENERATED_FROM`` points the
+        *generated* file → its generator (the script), so it is emitted reversed.
+        """
+        rel = self._canonical_file_target(ref.target_name)
+        file_id = file_node_id(rel)
+        if file_id not in self.node_obj:
+            file_id = self._ensure_stub(NodeKind.FILE, rel, rel.rsplit("/", 1)[-1])
+        if ref.edge_kind is EdgeKind.GENERATED_FROM:
+            attrs = {k: v for k, v in ref.attrs.items() if v is not None}
+            attrs["line_span"] = ref.line_span
+            self._emit_edge(file_id, ref.src_id, ref.edge_kind, CONFIDENCE_RESOLVED, attrs)
+        else:
+            self._emit(ref, file_id, CONFIDENCE_RESOLVED)
+
     def _derive_port_dataflow(
         self, ref: UnresolvedRef, port: Node, confidence: float, actual_text: str
     ) -> None:
@@ -780,6 +998,18 @@ class _Linker:
     # -- per-kind resolution ---------------------------------------------------
 
     def _resolve(self, ref: UnresolvedRef) -> None:
+        if ref.attrs.get("cocotb"):
+            self._resolve_cocotb(ref)
+            return
+        if ref.attrs.get("sln"):
+            self._resolve_sln(ref)
+            return
+        if ref.edge_kind is EdgeKind.CONSTRAINS:
+            self._resolve_constrains(ref)
+            return
+        if ref.attrs.get("file_ref"):
+            self._resolve_file_ref(ref)
+            return
         if ref.edge_kind in _SCOPED_REF_KINDS:
             self._resolve_scoped(ref)
             return
@@ -893,33 +1123,40 @@ class _Linker:
 
 
 def link_graph(
-    file_irs: list[FileIR], warnings: list[str] | None = None
+    file_irs: list[FileIR], warnings: list[str] | None = None, root: Path | None = None
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Link per-file IRs into the global knowledge graph (pass 2).
 
     Returns the graph plus the per-unit pass-2 reference records (for the
     persisted ``ref_index``). *warnings* (when given) collects diagnostics for
     edge endpoints that no parser emitted as a node — each is materialized as
-    an unresolved stub so the graph never carries attribute-less nodes.
+    an unresolved stub so the graph never carries attribute-less nodes. *root*
+    is the build root, used to canonicalize in-tree absolute file-refs (#164).
     """
-    linker = _Linker(file_irs)
+    linker = _Linker(file_irs, root)
     linker.link(file_irs)
     for edge in derive_test_covers(linker.graph):
         # The guarded path, so a derived edge can never reintroduce the
         # attribute-less nodes networkx auto-creates for unknown endpoints.
         linker._emit_edge(edge.src, edge.dst, edge.kind, edge.confidence, edge.attrs)
+    # SDC create_clock is authoritative clock evidence: promote the CLOCKED_BY
+    # edges it backs to 1.0 once every CONSTRAINS edge is resolved (M10). A no-op
+    # when no SDC clocks are present.
+    apply_sdc_clock_evidence(linker.graph)
     if warnings is not None:
         warnings.extend(linker.warnings)
     return linker.graph, linker.ref_records
 
 
-def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx.MultiDiGraph:
+def build_graph(
+    file_irs: list[FileIR], warnings: list[str] | None = None, root: Path | None = None
+) -> nx.MultiDiGraph:
     """Link per-file IRs into the global knowledge graph (pass 2).
 
     Thin wrapper over :func:`link_graph` that discards the ref records, for
     callers that only need the graph.
     """
-    return link_graph(file_irs, warnings)[0]
+    return link_graph(file_irs, warnings, root)[0]
 
 
 def _node_from_data(node_id: str, data: Mapping[str, Any]) -> Node:
@@ -942,6 +1179,7 @@ def link_incremental(
     dirty_files: set[str],
     affected_srcs: set[str],
     warnings: list[str] | None = None,
+    root: Path | None = None,
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Pass-2 link that re-resolves only the dirty closure + its neighborhood (#64).
 
@@ -968,7 +1206,7 @@ def link_incremental(
     :func:`link_graph` for cases this does not model (VHDL, binds/config,
     enrichment).
     """
-    linker = _Linker([])  # initialize the resolution indexes against an empty graph
+    linker = _Linker([], root)  # initialize the resolution indexes against an empty graph
     linker.graph = prior_graph  # ...then bind and mutate the prior graph in place
 
     # 1. Drop the changed surface: dirty/removed-file nodes (with their edges),

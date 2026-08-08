@@ -79,7 +79,9 @@ python scripts/bench_query.py --files 20000
 through `GraphQuery` (`hdl_kgraph/storage/query.py`), which answers from a
 *bounded subgraph* hydrated through the SQLite indices rather than loading the
 whole graph. It contrasts that with one `SqliteStore.load()` — the cost the old
-read path paid on *every* call.
+read path paid on *every* call. As of v2.2.0 the CLI `query` subcommands answer
+through this same bounded reader, so these numbers apply to the CLI too — no
+`query` command full-loads the graph.
 
 ### Recorded results
 
@@ -97,6 +99,141 @@ graph — `search_nodes("*")`, `get_hierarchy` of a top that directly contains
 the whole design, `find_signal_drivers` of a net present in every module —
 necessarily touches the whole graph and is not faster than a load. These are
 reported separately by the script; the target covers the localized tools.
+
+## Per-phase timing: gauging the parallel-build / merge payoff
+
+`hdl-kgraph build --timings` prints a per-phase wall-clock breakdown:
+
+```bash
+hdl-kgraph build path/to/design --timings
+```
+
+```text
+  timings:
+      discover            0.41s  (  3.0%)
+      parse (pass 0+1)    9.80s  ( 71.0%)
+      link (pass 2)       2.90s  ( 21.0%)
+      persist             0.70s  (  5.0%)
+      parallelizable      10.21s ( 74.0%)  [discover+parse: split across partitions]
+      serial link          2.90s ( 21.0%)  [paid once at merge]
+```
+
+The split answers whether a *distributed build + database merge* would pay off.
+A merge runs discovery and pass 0+1 (preprocess + parse) independently on each
+partition — that is the `parallelizable` line — and pays pass 2 (link) **once**
+over the combined IRs at merge time (the `serial link` line). When parse
+dominates (as above), splitting across machines / IP blocks and merging cuts
+wall-clock roughly in proportion to the parallelizable share divided by the
+worker count; when the link dominates, merging saves little, because the link is
+not parallelized by splitting the build.
+
+Note pass 0 (preprocess) and pass 1 (parse) are fused in `parse`: the pipeline
+streams parse tasks to the worker pool as it preprocesses each unit, so they
+cannot be timed apart without serializing them. Pass 1 is *already*
+`--jobs`-parallel on one machine, so the unique wins a multi-invocation merge
+adds are (a) parallelizing the otherwise-serial pass 0 across partitions and
+(b) scaling pass 0+1 beyond one box's cores.
+
+Measure on a representative design (or generate one with
+`python scripts/gen_corpus.py`) before committing to the merge feature.
+
+### Enrichment phase breakdown
+
+On large designs `--enrich` (pass 3, native-frontend elaboration) is the
+dominant phase — and a database merge **cannot** parallelize it, since
+elaboration is whole-design and runs once over the full source. When the
+`enrich (pass 3)` line dominates, optimize *it*, not the parallelizable split.
+
+To see where elaboration spends its time, `--timings` breaks pass 3 down further
+whenever it ran:
+
+```text
+  enrich phases (% of pass 3):
+      slang:enrich        2252.036s  ( 99.4%)
+      slang:apply            1.444s  (  0.1%)
+        slang/walk_tree     2208.899s ( 97.5%)
+        slang/walk_members   447.123s ( 19.7%)
+        slang/walk_hierpath   43.405s (  1.9%)
+        slang/parse_trees     33.835s (  1.5%)
+        slang/reconcile        4.088s (  0.2%)
+        slang/summarize        2.067s (  0.1%)
+        slang/elaborate_root   0.950s (  0.0%)
+        walk_instances     2,379,941  (928.13 us/instance)
+```
+
+Top-level spans (`slang:enrich`, `slang:apply`) tile the pass and sum to
+`enrich (pass 3)`; the indented `slang/...` rows detail `slang:enrich`:
+
+- `slang/parse_trees` — `SyntaxTree.fromFile` + `addSyntaxTree` per file;
+- `slang/elaborate_root` — `Compilation.getRoot()`. Measured at well under a
+  second even on multi-million-node designs: slang elaborates **lazily**, so
+  `getRoot()` is nearly free and the real elaboration happens on demand during
+  the walk below;
+- `slang/walk_tree` — the Python-side recursion over the elaborated instance
+  tree, the dominant cost (cost grows with elaborated instance count, i.e.
+  generate unrolling). Split into:
+  - `slang/walk_members` — iterating each scope's members (`list(scope)`), which
+    forces the lazy elaboration;
+  - `slang/walk_hierpath` — reading each instance's `hierarchicalPath` (a string
+    reconstructed by walking up the parent chain — the suspected super-linear
+    term);
+  - the residual (`walk_tree − members − hierpath`) is pure Python recursion;
+- `walk_instances` — elaborated instances recorded, with the derived
+  per-instance cost (`walk_tree / walk_instances`). Measured flat across designs
+  (~0.6–1.1 ms/instance on a small CPU block and a multi-million-instance SoC
+  alike, the spread being machine/cache variance), so the walk is **linear in
+  elaborated-instance count** — the cost is inherent slang elaboration paid
+  through the binding, not an algorithmic blowup;
+- `slang/summarize` — folding per-instance children into the multiplicity map;
+- `slang:apply` — applying the delta (upgrades, elaborated nodes) to the graph.
+
+`slang/walk_hierpath` is consistently ~2% — reconstructing `hierarchicalPath`
+is **not** the bottleneck. The dominant residual is the lazy elaboration forced
+by touching each instance (`.definition`, `.body`).
+
+A cheap optimization was attempted and **rejected**: skipping re-descent into
+instance bodies already walked (slang canonicalizes identical bodies in C++).
+Measured on two real designs it never fired — pyslang returns a fresh wrapper
+object per `.body` access, so identity-based deduplication finds no shared
+bodies (`walk_instances == unique bodies` on both). The walk is therefore the
+inherent floor of the pyslang path; a real reduction would need a C++-side slang
+visitor or fewer elaborated instances, not a Python-level dedup.
+
+The breakdown is collected by `hdl_kgraph.enrich._profile` via near-free
+`perf_counter` accumulators on the real code path (the hot walk uses bare
+accumulators rather than a per-node context manager, so the instrumentation does
+not distort the per-instance measurement), so the numbers reflect production
+behaviour, not a separate harness.
+
+## Subtree caching: re-parse only the changed block
+
+```bash
+python scripts/bench_merge.py --files 2000 --blocks 4
+```
+
+`bench_merge.py` splits a synthetic corpus into N blocks, builds each into its
+own cached database, and merges them. It then edits one block-private file,
+rebuilds **only that block**, and re-merges — reusing the other blocks' cached
+per-file IRs. It asserts the re-merged graph is byte-identical to a fresh
+monolithic build and that the cached rebuild re-parses only the changed block.
+
+### Recorded results
+
+| corpus | full build | full parse | changed block | block parse | re-merge link |
+|---|---|---|---|---|---|
+| 2000 files, 14 086 nodes (4 blocks) | 2.75 s | 0.92 s | 502 files (25%) | **0.23 s** | **0.53 s** |
+
+*Recorded on a Linux CI container, `--files 2000 --blocks 4`.* The headline:
+**parse cost scales with the change** — editing a quarter of the design re-parses
+a quarter of it (0.23 s ≈ ¼ of the 0.92 s full parse), not the whole tree — while
+the pass-2 link is **paid once** over the unioned IRs (`merge` prints
+`linked in …s`). Caching trades a re-parse of the unchanged blocks for a re-read
+of their cached IRs plus that single link, so it wins whenever parse dominates
+(large syntactic designs); on a tiny corpus the O(design) IR re-load can swamp
+the parse saving, so the script gates on the parse-cost claim, not end-to-end
+wall-clock. The same caveats as the merge command apply (same-root, syntactic
+graph only, preprocessing-self-contained blocks) — see
+[merge-design.md](merge-design.md).
 
 ## Context savings: what an assistant pays per question
 

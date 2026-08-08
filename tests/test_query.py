@@ -170,6 +170,75 @@ def test_find_signal_drivers_parity(query: GraphQuery, loaded) -> None:
             )
 
 
+def test_instances_of_list_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `instances-of` routes through this unpaged list method (the bounded
+    # path the MCP `who_instantiates` also wraps); it must equal the full-graph oracle.
+    graph, _ = loaded
+    for name in [*_names_of_kinds(graph, analysis.INSTANTIABLE_KINDS), "missing_child"]:
+        assert query.instances_of(name) == analysis.instances_of(graph, name), name
+
+
+def test_signal_drivers_list_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `drivers` routes through this unpaged list method.
+    graph, _ = loaded
+    signals = _names_of_kinds(graph, frozenset({NodeKind.SIGNAL, NodeKind.PORT}))
+    assert signals
+    for signal in signals:
+        for readers in (False, True):
+            assert query.signal_drivers(signal, None, readers) == analysis.signal_drivers(
+                graph, signal, module=None, readers=readers
+            ), signal
+    # the module-scoped branch (CLI `drivers --module`) has its own filtering +
+    # one-edge-kind hydration; pin it too, incl. a missing-module negative case.
+    modules = [*_names_of_kinds(graph, analysis.INSTANTIABLE_KINDS), "no_such_module"]
+    for signal in signals[:8]:
+        for module in modules:
+            assert query.signal_drivers(signal, module, False) == analysis.signal_drivers(
+                graph, signal, module=module, readers=False
+            ), (signal, module)
+
+
+def test_modules_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `modules` routes through this bounded list method; it must equal the
+    # full-graph computation (every MODULE/ENTITY, sorted by name, with counts).
+    graph, _ = loaded
+    expected = [
+        {
+            "name": data["name"],
+            "kind": data["kind"],
+            "file": data["file"],
+            "line": data["line_span"][0],
+            "instances": analysis.instantiation_count(graph, node_id),
+        }
+        for node_id, data in sorted(
+            graph.nodes(data=True),
+            key=lambda kv: (kv[1]["name"], kv[1]["file"], kv[1]["line_span"][0]),
+        )
+        if data["kind"] in (NodeKind.MODULE, NodeKind.ENTITY)
+        and not data["attrs"].get("unresolved")
+    ]
+    assert expected
+    assert query.modules() == expected
+
+
+def test_reset_tree_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `reset-tree` routes through this bounded SQL scan; it must equal the
+    # NetworkX oracle (alias-merged reset groups), dataclass→dict.
+    from hdl_kgraph.graph import clocks
+
+    graph, _ = loaded
+    assert query.reset_tree() == srv._jsonable(clocks.reset_tree(graph))
+
+
+def test_unresolved_stubs_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `unresolved` routes through this bounded scan; it must equal the
+    # full-graph oracle (the corpus has unresolved stubs, e.g. uvm_* bases).
+    graph, _ = loaded
+    expected = analysis.unresolved_stubs(graph)
+    assert expected  # corpus has unresolved references
+    assert query.unresolved_stubs() == expected
+
+
 def test_find_signal_drivers_scopes_edge_hydration_to_module(
     query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -244,6 +313,7 @@ def test_global_tools_parity(query: GraphQuery, loaded) -> None:
     graph, _ = loaded
     assert query.clock_domains() == srv._clock_domains_impl(graph)
     assert query.uvm_topology() == srv._uvm_impl(graph)
+    assert query.power_domains() == srv._power_domains_impl(graph)
 
 
 def test_no_full_graph_load(query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch) -> None:
