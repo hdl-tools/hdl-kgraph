@@ -484,6 +484,23 @@ Per task, median of 4 repetitions:
   against the control's 7: having the graph invited it to explore. When an
   answer is genuinely whole-design, the graph does not bound the work.
 
+  **Fixing the reset-classification bug this benchmark uncovered did not
+  recover the loss.** Re-measured on a rebuilt graph after that fix (8 runs,
+  $3.12): **-45.6% wall clock and -50.4% tokens**, against -45.3% / -34.1%
+  before — unchanged on time, worse on tokens. The fix removed wrong data
+  (reset nets are no longer reported as clock domains) without supplying the
+  right data: `clock_domains` still returns four domains all headed `"clk"`
+  with nothing to tell them apart, and still zero CDC suspects, because of the
+  separate multi-instance aliasing limitation documented in
+  `graph/clocks.py`. Inspecting the transcripts, the graph arm called the tool
+  4 times, could not use the answer, and reconstructed the domains from source
+  anyway — paying for both. Both arms ended up correct; only the graph arm paid
+  twice.
+
+  **So `clock_domains` should not be relied on for "which signals cross"** on a
+  design that instantiates a module on more than one clock. That is the honest
+  scope of the tool today, and it is why this row is kept in the table.
+
 **An earlier 3-task run reported 67.9%.** That set contained none of the
 questions grep wins. Adding one `port-map` task moved the headline from 67.9%
 to 51.6% — a 16-point swing from a single task. Treat any figure from this tier
