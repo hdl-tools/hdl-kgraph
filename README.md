@@ -132,11 +132,15 @@ plus the files a no-graph agent would read — and `bench fidelity` compares
 both against hand-written ground truth. The baseline searches only the files
 the graph indexed, caps and flags its own reads, prints every command it ran,
 and reports the questions where **grep wins** (`port-map` on hand-written RTL
-does). On an RV32I SoC, 11 derived questions cost 8 613 tokens through the
-graph against 369 337 by grep — more than a 200 k context window holds, so the
-un-graphed session cannot even ask them all. Median saving 97.9% over 84 RTL
-files, 96.0% over the full 12.5 MB tree; on a 39 KB toy design it correctly
-reports that the graph is *not worth it*. A live Claude Code A/B is opt-in.
+does). On an RV32I SoC the offline saving is 97.9% over 84 RTL files, and on a
+39 KB toy design it correctly reports that the graph is *not worth it*.
+
+`bench agent` then checks that against reality by running the same tasks
+through Claude Code twice, with and without the MCP server. Measured live:
+**median 67.9% faster wall-clock** (8.5 s vs 26.4 s) and 63.7% fewer tokens —
+real, but well under the offline figure, because a live agent greps far more
+cleverly than any scripted baseline. The offline number is an upper bound, not
+a prediction, and the docs say so.
 → [docs/benchmarks.md](docs/benchmarks.md)
 
 ## What gets extracted

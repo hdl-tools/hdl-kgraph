@@ -307,5 +307,68 @@ Read the caveats before quoting any number from this tier:
 - Exit code is not a success signal: an auth failure exits 0 with
   `is_error: true`. The runner gates on the result object instead.
 
-No numbers are recorded here: they would be a snapshot of one machine, one
-model version, and one task list. Run it on yours.
+### Recorded results (live, Claude Code 2.1.224, Opus 5)
+
+3 design questions x 2 repetitions x 2 arms = 12 runs, all valid, on the 84-file
+RTL corpus. Total spend **$2.44**. `--max-turns 12`.
+
+| | graph | no-graph |
+|---|---|---|
+| median wall clock | **8 496 ms** | **26 422 ms** |
+| median billable tokens (in+out) | 671 | 1 849 |
+| median total context (in + cache create + cache read) | 17 487 | 63 714 |
+| median turns | 2.5 | 7.0 |
+| median cost | $0.070 | $0.231 |
+
+**Median time saving 67.9%; median token saving 63.7%.** Across all 12 runs the
+totals are 122.8 s versus 183.8 s — **61 s saved, 33.2%** — and total context
+238 694 versus 402 937 tokens (40.8%). Median and total diverge because of one
+task; see below.
+
+Per task (median of 2 runs each):
+
+| task | graph wall | grep wall | graph $ | grep $ |
+|---|---|---|---|---|
+| who instantiates `cdc_2ff_sync` | 6 814 ms | 22 782 ms | $0.070 | $0.231 |
+| clock domains + crossings | 46 104 ms | 42 692 ms | $0.338 | $0.425 |
+| impact of changing `apb4_register_bank` | 8 496 ms | 26 422 ms | $0.036 | $0.121 |
+
+### Tier 1 overstates what a live agent actually saves
+
+This is the most important number in this document. Tier 1 puts the saving at
+**97.7%**; the live A/B measures **64–73%**. Tier 1 is not wrong, but it answers
+a different question, and the gap is structural:
+
+- Tier 1's baseline reads **whole files** for every grep hit, because that is
+  what the `Read` tool does. A real agent is cleverer — it greps with context
+  lines, reads selectively, and stops as soon as it can answer.
+- Tier 1 has no turn budget. The live runs are capped at 12 turns, which bounds
+  how much the control arm can flail.
+- Tier 1 counts the evidence text; the live runs put tool results in the
+  **prompt cache**, so the cost shows up in `cache_creation`/`cache_read`, not
+  in billable input tokens.
+
+**Treat tier 1 as an upper bound on the saving, not a prediction of it.** It
+measures the cost of the evidence a question needs under a stated policy. Only
+tier 3 measures what an agent spends.
+
+### Where the graph lost, live
+
+On "what are the clock domains, and which signals cross between them", the
+graph arm was **8% slower** (46.1 s vs 42.7 s). It made 5 graph tool calls and
+ran 10 turns — having the graph invited it to explore rather than settle.
+It was still ~20% cheaper, but wall-clock went the wrong way. One task out of
+three, measured twice.
+
+### Answer quality was equivalent
+
+On the `cdc_2ff_sync` question both arms returned the *same* answer — 3 parent
+modules, 9 instances, correct files. The graph arm added the confidence score
+(0.8, name-matched rather than elaborated); the grep arm independently noticed
+that the sky130 sv2v netlist is stale and missing an instance. Neither arm was
+wrong, and the no-graph answer was arguably richer. **The graph bought speed
+and cost here, not correctness** — on questions grep can answer at all, which
+is exactly what `bench fidelity` exists to bound.
+
+**n = 2 per arm per task.** That is a spread, not a measurement. Run more
+repetitions before quoting any of this as a property of the tool.

@@ -31,10 +31,19 @@ the major version, and schema changes ship with a migration.
     comment/string false positive, a VHDL case-insensitive name, and one case
     grep answers correctly. `--suite PATH` runs your own cases.
   - `bench agent` runs an opt-in live Claude Code A/B (one MCP server versus
-    none) and reports the CLI's own token usage. Isolates both arms
-    identically, asserts per run that they differed only in MCP, and documents
-    that no seed or temperature control exists — the output is a spread, not a
-    measurement.
+    none) and reports the CLI's own token usage and wall clock. Isolates both
+    arms identically, and asserts per run that they genuinely differed: the
+    graph arm must have *called* a graph tool (a connected server proves the
+    plumbing, not the usage) and the control arm must have called none. Both
+    checks are load-bearing — `--permission-mode dontAsk` auto-denies an
+    unlisted MCP tool, so without an explicit allow rule the graph arm silently
+    falls back to grep and the comparison is a nullity dressed up as a result.
+    Documents that no seed or temperature control exists — the output is a
+    spread, not a measurement.
+  - Measured live on the validation SoC: median **67.9% faster wall clock**
+    and 63.7% fewer tokens, against tier 1's offline 97.7%. The docs now state
+    plainly that the offline figure is an **upper bound, not a prediction** — a
+    real agent greps far more selectively than any scripted baseline can.
   - See [docs/benchmarks.md](docs/benchmarks.md).
 - `SqliteStore.load_file_metas()`: the stored per-file records without
   hydrating the graph, so a caller needing only the source inventory does not

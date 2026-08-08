@@ -436,11 +436,43 @@ def _init_event(servers: list[dict]) -> dict:
 
 
 def test_parse_stream_picks_the_init_and_result_events() -> None:
-    init, result = agent._parse_stream(
+    init, result, graph_calls = agent._parse_stream(
         "not json\n" + _stream(_init_event([]), _result_event()) + "\n{bad json"
     )
     assert init["subtype"] == "init"
     assert result["type"] == "result"
+    assert graph_calls == 0
+
+
+def test_parse_stream_counts_graph_tool_calls() -> None:
+    """The only evidence that the graph arm used the graph."""
+    assistant = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "mcp__hdl-kgraph__who_instantiates"},
+                    {"type": "tool_use", "name": "mcp__hdl-kgraph__port_map"},
+                    {"type": "tool_use", "name": "Grep"},
+                    {"type": "text", "text": "thinking"},
+                ]
+            },
+        }
+    )
+    stdout = "\n".join([json.dumps(_init_event([])), assistant, json.dumps(_result_event())])
+    _init, _result, graph_calls = agent._parse_stream(stdout)
+    assert graph_calls == 2
+
+
+def test_graph_tools_are_explicitly_allowed_only_for_the_graph_arm() -> None:
+    """`--permission-mode dontAsk` auto-denies an unlisted MCP tool, so without
+    an allow rule the graph arm silently degrades to grep and the A/B compares
+    two identical arms."""
+    graph_argv = agent._command(0, "{}", model=None, max_turns=3, allow_graph_tools=True)
+    control_argv = agent._command(0, "{}", model=None, max_turns=3, allow_graph_tools=False)
+    assert "--allowedTools" in graph_argv
+    assert agent.MCP_ALLOW_RULE in graph_argv
+    assert "--allowedTools" not in control_argv
 
 
 def _run_with(monkeypatch: pytest.MonkeyPatch, arm: str, stdout: str) -> agent.Run:
@@ -488,6 +520,38 @@ def test_control_arm_flags_attempts_to_reach_the_graph(
     stdout = _stream(_init_event([]), _result_event(permission_denials=[{"tool": "Bash"}]))
     record = _run_with(monkeypatch, "no-graph", stdout)
     assert "tried to reach the graph" in record.note
+
+
+def test_graph_arm_is_rejected_when_the_graph_was_never_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connected server proves the plumbing, not the usage. If the model
+    never called a graph tool the two arms were identical."""
+    stdout = _stream(_init_event([{"name": "hdl-kgraph", "status": "connected"}]), _result_event())
+    record = _run_with(monkeypatch, "graph", stdout)
+    assert record.ok is False
+    assert "never called a graph tool" in record.note
+
+
+def test_control_arm_is_rejected_when_it_called_a_graph_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assistant = json.dumps(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "mcp__hdl-kgraph__port_map"}]},
+        }
+    )
+    stdout = "\n".join([json.dumps(_init_event([])), assistant, json.dumps(_result_event())])
+    record = _run_with(monkeypatch, "no-graph", stdout)
+    assert record.ok is False
+    assert "control contaminated" in record.note
+
+
+def test_design_root_comes_from_the_database_not_the_path(db_path: Path) -> None:
+    """`--db` may point outside the project it indexes; the grandparent of the
+    db path would then drop the agent somewhere with nothing to grep."""
+    assert agent.design_root(db_path) == db_path.parent.parent
 
 
 def test_a_run_that_did_not_complete_is_not_counted(monkeypatch: pytest.MonkeyPatch) -> None:

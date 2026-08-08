@@ -45,6 +45,19 @@ from typing import Any
 #: Bash is the only real boundary, and grep/read tasks do not need it.
 ARM_TOOLS = "Read,Grep,Glob"
 
+#: The MCP server name both the config and the allow-rule must agree on.
+MCP_SERVER_NAME = "hdl-kgraph"
+
+#: Arm A must *allow* the graph tools, not merely have them configured.
+#: ``--permission-mode dontAsk`` auto-denies anything that would prompt, and an
+#: unlisted MCP tool prompts — so without this the graph arm silently falls
+#: back to grep and the whole A/B measures nothing. Server-level rule; the
+#: individual tools are ``mcp__hdl-kgraph__who_instantiates`` and friends.
+MCP_ALLOW_RULE = f"mcp__{MCP_SERVER_NAME}"
+
+#: Prefix of every graph tool call, used to prove the arm actually used them.
+MCP_TOOL_PREFIX = f"mcp__{MCP_SERVER_NAME}__"
+
 #: Gate on the result object, never on the exit code: a `--bare` auth failure
 #: and a rate-limit stop both exit 0 with `is_error: true`.
 _SUCCESS_REASON = "completed"
@@ -71,6 +84,9 @@ class Run:
     model: str = ""
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
     permission_denials: list[Any] = field(default_factory=list)
+    #: How many times the run actually called a graph tool. Zero in arm A means
+    #: the graph was configured but unused — a null comparison, not a result.
+    graph_tool_calls: int = 0
     answer: str = ""
     ok: bool = False
     note: str = ""
@@ -100,10 +116,16 @@ def _mcp_config(db_path: Path | None) -> str:
         return json.dumps({"mcpServers": {}})
     from hdl_kgraph.mcp.setup import plan_entry
 
-    return json.dumps({"mcpServers": {"hdl-kgraph": plan_entry(db_path)}})
+    return json.dumps({"mcpServers": {MCP_SERVER_NAME: plan_entry(db_path)}})
 
 
-def _command(prompt_len: int, mcp_json: str, model: str | None, max_turns: int) -> list[str]:
+def _command(
+    prompt_len: int,
+    mcp_json: str,
+    model: str | None,
+    max_turns: int,
+    allow_graph_tools: bool = False,
+) -> list[str]:
     """The verified headless invocation.
 
     The prompt is *not* passed positionally — ``--mcp-config`` and ``--tools``
@@ -131,15 +153,23 @@ def _command(prompt_len: int, mcp_json: str, model: str | None, max_turns: int) 
         "--max-turns",
         str(max_turns),
     ]
+    if allow_graph_tools:
+        argv += ["--allowedTools", MCP_ALLOW_RULE]
     if model:
         argv += ["--model", model]
     return argv
 
 
-def _parse_stream(stdout: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """``(init event, result event)`` from a ``stream-json`` transcript."""
+def _parse_stream(stdout: str) -> tuple[dict[str, Any], dict[str, Any], int]:
+    """``(init event, result event, graph tool-call count)``.
+
+    The tool-call count is the only proof that the graph arm *used* the graph.
+    A connected server says the plumbing works; it does not say the model
+    called it.
+    """
     init: dict[str, Any] = {}
     result: dict[str, Any] = {}
+    graph_calls = 0
     for line in stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -152,7 +182,13 @@ def _parse_stream(stdout: str) -> tuple[dict[str, Any], dict[str, Any]]:
             init = event
         elif event.get("type") == "result":
             result = event
-    return init, result
+        elif event.get("type") == "assistant":
+            for block in event.get("message", {}).get("content", []) or []:
+                if isinstance(block, dict) and str(block.get("name", "")).startswith(
+                    MCP_TOOL_PREFIX
+                ):
+                    graph_calls += 1
+    return init, result, graph_calls
 
 
 def run_once(
@@ -175,7 +211,7 @@ def run_once(
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     try:
         completed = subprocess.run(
-            _command(len(task), mcp_json, model, max_turns),
+            _command(len(task), mcp_json, model, max_turns, allow_graph_tools=db_path is not None),
             input=task,
             capture_output=True,
             text=True,
@@ -187,7 +223,8 @@ def run_once(
         record.note = f"invocation failed: {type(exc).__name__}: {exc}"
         return record
 
-    init, result = _parse_stream(completed.stdout)
+    init, result, graph_calls = _parse_stream(completed.stdout)
+    record.graph_tool_calls = graph_calls
     if not result:
         record.note = "no result event in the transcript"
         return record
@@ -214,8 +251,21 @@ def run_once(
 
     # Provenance: prove the arms actually differed, rather than trusting flags.
     connected = [s for s in record.mcp_servers if s.get("status") == "connected"]
-    if arm == "graph" and not any(s.get("name") == "hdl-kgraph" for s in connected):
+    if arm == "graph" and not any(s.get("name") == MCP_SERVER_NAME for s in connected):
         record.note = "arm 'graph' had no connected hdl-kgraph server — not comparable"
+        return record
+    if arm == "graph" and record.graph_tool_calls == 0:
+        # Connected is not the same as used. Without an explicit allow rule
+        # `dontAsk` denies the MCP call and the model quietly falls back to
+        # grep — which would make both arms identical and the result a nullity
+        # dressed up as a measurement.
+        record.note = (
+            "arm 'graph' never called a graph tool (server connected but unused) "
+            "— the arms did not differ, so this run is not comparable"
+        )
+        return record
+    if arm == "no-graph" and record.graph_tool_calls:
+        record.note = "arm 'no-graph' called a graph tool — control contaminated"
         return record
     if arm == "no-graph" and connected:
         record.note = f"arm 'no-graph' had MCP servers connected: {connected} — not comparable"
@@ -228,6 +278,47 @@ def run_once(
 
     record.ok = True
     return record
+
+
+#: The only file copied out of the real config directory (see
+#: :func:`_seed_credentials`).
+CREDENTIALS_FILE = ".credentials.json"
+
+
+def _seed_credentials(config_dir: Path) -> str | None:
+    """Copy just the credential file into the benchmark's config directory.
+
+    A pristine ``CLAUDE_CONFIG_DIR`` is what keeps the user's plugins, agents,
+    skills, and hooks out of both arms — but it also strips the OAuth
+    credential, and every run then returns "Not logged in" with zero tokens.
+    Seeding *only* this one file authenticates the runs while leaving all the
+    context-inflating configuration behind.
+
+    Returns a note if the credential could not be seeded, so the caller can
+    explain the failure instead of reporting a run of empty results.
+    """
+    source = Path.home() / ".claude" / CREDENTIALS_FILE
+    if not source.is_file():
+        # API-key auth needs no file; OAuth will fail loudly per-run anyway.
+        return f"no {source} to seed; runs will need ANTHROPIC_API_KEY"
+    target = config_dir / CREDENTIALS_FILE
+    target.write_bytes(source.read_bytes())
+    target.chmod(0o600)
+    return None
+
+
+def design_root(db_path: Path) -> Path:
+    """The design root the graph was built from, per its own ``meta`` table.
+
+    Both arms must run *in the design*, and the database is the authority on
+    where that is. Deriving it from the database's own path (``.hdl-kgraph``'s
+    parent) breaks the moment ``--db`` points somewhere else — a benchmark DB
+    in ``/tmp`` would put the agent in ``/``, where the control arm has nothing
+    to grep and the comparison is meaningless.
+    """
+    from hdl_kgraph.storage.sqlite_store import SqliteStore
+
+    return Path(SqliteStore(db_path).load_meta()["root"])
 
 
 def run(
@@ -245,7 +336,8 @@ def run(
     runs: list[Run] = []
     with tempfile.TemporaryDirectory(prefix="hdl-kgraph-agentbench-") as tmp:
         config_dir = Path(tmp) / "claude-config"
-        config_dir.mkdir()
+        config_dir.mkdir(mode=0o700)
+        seed_note = _seed_credentials(config_dir)
         for task in tasks:
             for repetition in range(repeat):
                 # Alternate which arm runs first: prompt cache systematically
@@ -266,6 +358,8 @@ def run(
                             timeout_s=timeout_s,
                         )
                     )
+                    if seed_note and not runs[-1].ok:
+                        runs[-1].note = f"{runs[-1].note} ({seed_note})"
     return runs
 
 
@@ -289,11 +383,23 @@ def summarize(runs: list[Run]) -> dict[str, Any]:
             ),
             "median_cache_read_tokens": statistics.median(series(arm, "cache_read_tokens")) or None,
             "median_cost_usd": statistics.median(series(arm, "cost_usd")) or None,
+            # The end-to-end wall clock — the only tier that can measure it.
+            # Tier 1's `graph_ms`/`baseline_ms` are local I/O and are NOT a
+            # time-saved claim (the pure-Python scan penalises the baseline).
+            "median_duration_ms": statistics.median(series(arm, "duration_ms")) or None,
+            "total_duration_ms": sum(series(arm, "duration_ms")) or None,
         }
     graph = summary["arms"]["graph"]["median_billable_tokens"]
     control = summary["arms"]["no-graph"]["median_billable_tokens"]
     summary["median_saved_pct"] = (
         round(100.0 * (control - graph) / control, 2) if graph is not None and control else None
+    )
+    graph_ms = summary["arms"]["graph"]["median_duration_ms"]
+    control_ms = summary["arms"]["no-graph"]["median_duration_ms"]
+    summary["median_time_saved_pct"] = (
+        round(100.0 * (control_ms - graph_ms) / control_ms, 2)
+        if graph_ms is not None and control_ms
+        else None
     )
     summary["caveats"] = [
         "no seed or temperature control exists — these are a distribution, not a measurement",
@@ -314,6 +420,7 @@ def summarize(runs: list[Run]) -> dict[str, Any]:
             "cache_creation_tokens": r.cache_creation_tokens,
             "cache_read_tokens": r.cache_read_tokens,
             "num_turns": r.num_turns,
+            "graph_tool_calls": r.graph_tool_calls,
             "duration_ms": r.duration_ms,
             "cost_usd": r.cost_usd,
             "model": r.model,

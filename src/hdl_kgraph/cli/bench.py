@@ -213,7 +213,10 @@ def agent_cmd(
         runs = agent_bench.run(
             tasks,
             db_path=resolved,
-            cwd=resolved.parent.parent,
+            # The design root per the database's own meta table — not the db
+            # path's grandparent, which is wrong whenever --db points outside
+            # the project it indexes.
+            cwd=agent_bench.design_root(resolved),
             repeat=repeat,
             model=model,
             max_turns=max_turns,
@@ -232,9 +235,13 @@ def agent_cmd(
             f"{arm:<10} ok {stats['runs_ok']}/{stats['runs_total']}   "
             f"median billable tokens {stats['median_billable_tokens']}   "
             f"median turns {stats['median_turns']}   "
+            f"median wall {stats['median_duration_ms']} ms   "
             f"median cost ${stats['median_cost_usd']}"
         )
-    click.echo(f"median saving: {summary['median_saved_pct']}%")
+    click.echo(
+        f"median token saving: {summary['median_saved_pct']}%   "
+        f"median time saving: {summary['median_time_saved_pct']}%"
+    )
     click.echo("")
     for caveat in summary["caveats"]:
         click.echo(f"  - {caveat}")
