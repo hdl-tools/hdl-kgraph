@@ -45,7 +45,7 @@ by name ([extraction](docs/internals/extraction.md)).
 
 ## Benchmark
 
-A 69-file RV32I SoC (~25k lines of RTL), single laptop core:
+A 69-file RV32I SoC (~21k lines of RTL), single laptop core:
 
 | | |
 |---|---|

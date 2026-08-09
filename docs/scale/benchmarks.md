@@ -6,6 +6,27 @@ costs an AI assistant fewer tokens than grepping the RTL, and answers correctly
 where grep does not. That one ships as a command, `hdl-kgraph bench`, so a user
 can check it against their own design instead of trusting a table here.
 
+## Headline numbers
+
+Every figure below is recorded in full, with its corpus and caveats, in the
+section named alongside it. Read the section before quoting the number.
+
+| what | measured | where |
+|---|---|---|
+| Incremental update, 1 file edited in a 2000-file design | **1.29 s** (budget < 1.8 s) | [M4 target](#m4-target-incremental-update-of-1-file-in-a-2k-file-design-1-s) |
+| Localized query on 140 940 nodes / 323 831 edges | **0.7–3.7 ms**, vs ~5000 ms for a full load | [Read latency](#read-latency-bounded-queries-vs-a-full-graph-load) |
+| Whole-design `clock_domains` / `uvm_topology` | **<0.5 ms** (precomputed at build) | [Read latency](#read-latency-bounded-queries-vs-a-full-graph-load) |
+| Offline context saving, RV32I SoC | **97.9% median** per question — but **82.4% mean**, and one question is −32.8% | [Context savings](#context-savings-what-an-assistant-pays-per-question) |
+| Live agent A/B through Claude Code | **51.6%** faster, 46.8% fewer tokens (32 runs, 30 valid) — **2 of 4 tasks lost** | [Live agent A/B](#live-agent-ab-opt-in-spends-api-budget) |
+
+Two things the table cannot convey, and which the sections say plainly:
+**localized query latency tracks the answer size, not the design size** (so it
+does not degrade as the graph grows), and **the graph loses on some questions** —
+`port-map` on hand-written RTL is cheaper to grep, and the clock-domains task is
+*slower* with the graph than without it. The offline figures are an upper bound
+on the saving, not a prediction of it: a live agent greps far more cleverly than
+any scripted baseline.
+
 ## M4 target: incremental update of 1 file in a 2k-file design < 1 s
 
 Procedure (fully scripted):
