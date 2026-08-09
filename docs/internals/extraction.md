@@ -218,4 +218,4 @@ library prefixes, extended/escaped identifiers, generic-dependent
 wrappers); the score is the honest contract.
 
 The full node/edge schema and the per-milestone extraction details are in
-[ROADMAP.md](../ROADMAP.md).
+[ROADMAP.md](../../ROADMAP.md).

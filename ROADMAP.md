@@ -107,7 +107,7 @@ hierarchy graph for a Verilog/SystemVerilog codebase.
 - [x] Grammar bake-off: evaluate `gmlarumbe/tree-sitter-systemverilog` vs
       `tree-sitter/tree-sitter-verilog` against the fixture corpus; pick one grammar
       for both `.v` and `.sv` (see Risks) — **winner: `tree-sitter-systemverilog`;
-      results in docs/grammar-bakeoff.md**
+      results in docs/internals/grammar-bakeoff.md**
 - [x] tree-sitter SV parser extracting: `MODULE`, `INTERFACE`, `PACKAGE`, `PROGRAM`,
       `FUNCTION`/`TASK`, `PORT`, `PARAMETER`, `INSTANCE`, `TYPEDEF`/`STRUCT`/`ENUM`,
       `CLASS` (declaration + `EXTENDS` only)
@@ -125,7 +125,7 @@ hierarchy graph for a Verilog/SystemVerilog codebase.
 - [x] Test corpus: 10–15 small fixtures (plain Verilog, SV interfaces, a class,
       an unresolved instance)
 - [x] Claim the `hdl-kgraph` name on PyPI with a 0.1 release (release workflow
-      and docs/releasing.md are in; publishing is a maintainer action)
+      and docs/project/releasing.md are in; publishing is a maintainer action)
 
 **Acceptance:** builds a graph from a real OSS design (e.g. ibex-class repo);
 `tree` prints the correct hierarchy; ≥90% of fixture constructs extracted;
@@ -166,7 +166,7 @@ macro-instantiated modules resolve after expansion; line mapping verified by tes
       `VHDL_PACKAGE`/`PACKAGE_BODY`, `CONFIGURATION` (+`BINDS`),
       generics→`PARAMETER`, ports, signals, processes, component and direct
       entity instantiation — **grammar: `jpt13653903/tree-sitter-vhdl` (PyPI
-      `tree-sitter-vhdl`); caveats in docs/grammar-bakeoff.md. Component
+      `tree-sitter-vhdl`); caveats in docs/internals/grammar-bakeoff.md. Component
       declarations are deliberately not graph nodes: instantiations carry the
       style and the linker resolves through configuration/default binding**
 - [x] Case-insensitive name normalization (original casing kept in attrs)
@@ -215,7 +215,7 @@ affect?"
       with a clear message, `update`/`watch` fall back to a full rebuild)
 - [x] Documented benchmark target: incremental update of 1 file in a 2k-file
       design < 1 s — **0.85 s measured; procedure and results in
-      docs/benchmarks.md (`scripts/bench_incremental.py`)**
+      docs/scale/benchmarks.md (`scripts/bench_incremental.py`)**
 
 **Acceptance:** editing one file and running `update` re-parses only that file;
 `impact` correctly flags parents/importers/includers in fixtures; watch mode
@@ -293,7 +293,7 @@ a UVM example testbench yields a component-tree report.
       answers from a bounded, index-backed subgraph and never loads the whole
       graph (v0.9), so a concurrent `update`/`watch` rewrite is picked up with
       no staleness window**
-- [x] Docs: Claude Code / Claude Desktop configuration snippets — **docs/mcp.md:
+- [x] Docs: Claude Code / Claude Desktop configuration snippets — **docs/usage/mcp.md:
       tool reference, transports, cold-checkout walkthrough**
 - [x] `hdl-kgraph setup`: detect installed assistants and write their MCP
       config — **Claude Code via project-scope `.mcp.json`, Claude Desktop via
@@ -310,7 +310,7 @@ Phases 1–2 (canvas renderer hygiene; precomputed "static" layout tier with
 `--layout auto|live|static` auto-routing) are delivered; Phases 3–6
 (aggregation/drill-down, payload compression, GraphML/GEXF export, WebGL)
 remain parked. Analysis and phased plan in
-[docs/viz-scalability.md](docs/viz-scalability.md).
+[docs/scale/viz-scalability.md](docs/scale/viz-scalability.md).
 
 ## M7 — v0.7: Semantic enrichment via native frontends (stretch)
 
@@ -377,12 +377,12 @@ waits on (or runs out of memory loading) the whole graph.
       stub-GC + out-of-core TEST_COVERS + selective IR decode), byte-identical to
       the in-memory path. Landed opt-in as `--bounded-link` (v1.12), became the
       default (v1.13+), formalized in v2.0 — see
-      [docs/scalability.md](docs/scalability.md).
+      [docs/scale/scalability.md](docs/scale/scalability.md).
 
 **Acceptance:** `tests/test_query.py` (read parity + no-full-load proof),
 `tests/test_incremental_equivalence.py` (byte-identical scoped writes),
 `scripts/bench_query.py` and `scripts/bench_incremental.py` (latency + bounded
-read/write volume). Detail in [docs/scalability.md](docs/scalability.md).
+read/write volume). Detail in [docs/scale/scalability.md](docs/scale/scalability.md).
 
 ---
 
@@ -403,12 +403,12 @@ the critical path for the RAM goal.
 - [x] **M11 — profile & decision gate:** memory + CPU profile of `build` /
       summaries / `load()` across a scale sweep (`scripts/profile_v2.py`),
       pinning the dominant cost and selecting the M12 path —
-      [docs/v2/m11_profiling.md](docs/v2/m11_profiling.md). Finding: `load()` is
+      [docs/project/v2/m11_profiling.md](docs/project/v2/m11_profiling.md). Finding: `load()` is
       graph-CPU-bound (85–90 %), not SQLite-I/O-bound, and **peak RAM from
       materialising the whole graph is the binding constraint**.
 - [x] **M12 — graph-layer spike:** evaluated an out-of-core layer and a compact
       in-memory core via `scripts/spike_m12.py` —
-      [docs/v2/m12_graph_layer.md](docs/v2/m12_graph_layer.md). Finding: an
+      [docs/project/v2/m12_graph_layer.md](docs/project/v2/m12_graph_layer.md). Finding: an
       **off-the-shelf out-of-core layer hits the RAM target** — SQL-native scans
       (zero dep) and `kuzu` (embedded graph DB) answer a whole-design scan in
       **bounded RAM** (~50 MiB / ~110 MiB flat, vs NetworkX's 4610 B/node linear →
@@ -438,7 +438,7 @@ the critical path for the RAM goal.
 - [ ] **M14 — native tree-sitter walk → `FileIR` (optional):** remove per-node FFI
       from the parse hot path.
 
-[#128]: https://github.com/chuanseng-ng/hdl-kgraph/issues/128
+[#128]: https://github.com/hdl-tools/hdl-kgraph/issues/128
 
 ---
 
@@ -478,7 +478,7 @@ target on the exploratory track above.
       (a unique cross-file match is 0.8, an unresolved name degrades to a
       stub). C/C++ bypass the SV preprocessor; bare-name matching is the tier
       (no C++ mangling, no C preprocessor). Schema unchanged — `FOREIGN_BINDS`
-      and the `C`/`CPP` languages already existed. See docs/extraction.md**
+      and the `C`/`CPP` languages already existed. See docs/internals/extraction.md**
 - [x] Python testbench scanning: cocotb `dut.signal` attribute access →
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
       `TEST_COVERS` — **`parser/python.py` (tree-sitter-python) extracts
@@ -488,7 +488,7 @@ target on the exploratory track above.
       The DUT is heuristic — configured `[build].top` else a filename guess
       (`test_fifo.py` → `fifo`) — so a `.py` is only a source when it mentions
       `cocotb` (content-sniffed), and `update` re-links cocotb designs fully.
-      See docs/extraction.md**
+      See docs/internals/extraction.md**
 - [x] Stable public CLI + graph schema, semver commitment, documented
       migration policy — **shipped in v1.0** once its prerequisites landed: the
       SQLite schema migration ladder (#74) so a version bump no longer forces a
@@ -497,7 +497,7 @@ target on the exploratory track above.
       (`hdl_kgraph.api`) remains a v1.x follow-up.
 - [ ] PyPI 1.0 release — the package is published at
       https://pypi.org/project/hdl-kgraph/ and the code is at 1.0; pushing the
-      `v1.0.x` tag fires the publish workflow (see docs/releasing.md). A
+      `v1.0.x` tag fires the publish workflow (see docs/project/releasing.md). A
       documentation site is a v1.x follow-up.
 
 **Acceptance:** a cocotb-driven SV design with DPI-C calls shows one connected
@@ -528,7 +528,7 @@ scenario coverage.
       design nodes (exact match 1.0; glob patterns 0.8/0.6) — **`parser/tcl.py`'s
       `SdcParser` (hand-written Tcl-subset scanner, literal `set` substitution
       only) and a `_resolve_constrains` pass-2 branch; wired into discovery and
-      the pipeline. See docs/extraction.md ([#25])**
+      the pipeline. See docs/internals/extraction.md ([#25])**
 - [x] M5 synergy: `create_clock` is authoritative `CLOCKED_BY` evidence — upgrades
       the 0.4 name heuristic to 1.0; `set_clock_groups -asynchronous` and
       `set_false_path` feed the CDC report as declared-safe crossings —
@@ -542,7 +542,7 @@ scenario coverage.
       Tcl-subset base; `-elements` reuse the `cells` query resolution; the
       `power_domains` report ships as a query/MCP tool + persisted summary (with an
       out-of-core SQL fallback) + `analyze` digest line. Domain-crossing suspects
-      are a follow-on. See docs/extraction.md, docs/analyses.md**
+      are a follow-on. See docs/internals/extraction.md, docs/usage/analyses.md**
 - [x] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
       `REFERENCES_FILE` edges; `source` chains; literal `set` variable
       substitution only — Tcl is never evaluated (see Risks) — **`TclScriptParser`
@@ -551,7 +551,7 @@ scenario coverage.
       simpler and uniform for incremental than splitting `source` onto
       `INCLUDES`); a new pass-2 `_resolve_file_ref` binds each path to its real
       `FILE` node or a non-shadowing `unresolved:file:` stub. See
-      docs/extraction.md**
+      docs/internals/extraction.md**
 - [x] Perl legacy scripting: detect HDL files a script reads/writes/generates
       (`open()` of `.v`/`.sv` paths, heredoc-embedded Verilog) →
       `REFERENCES_FILE` + `GENERATED_FROM` lineage for generated RTL;
@@ -560,13 +560,13 @@ scenario coverage.
       (read/write); a `module`…`endmodule` body flags the script a generator, and
       each written HDL file → GENERATED_FROM (reusing the flow-script
       `_resolve_file_ref`, now handling the reversed generated→generator
-      direction). See docs/extraction.md**
+      direction). See docs/internals/extraction.md**
 - [x] SLN (Cadence Perspec System Level Notation) portable stimulus:
       actions → `ACTION` nodes; `>`-invocations → `INVOKES` (same-file action) and
       `TEST_COVERS` (design module/instance) — **the real format is the `e`/Specman
       dialect (not the PSS-like guess), so `SlnParser` scans `action`/`>sub_action`/
       constraints best-effort; `INVOKES` is a new additive `EdgeKind`. Accellera PSS
-      (`.pss`) remains the natural open-sibling follow-on. See docs/extraction.md**
+      (`.pss`) remains the natural open-sibling follow-on. See docs/internals/extraction.md**
 - [x] `.sln` disambiguation: content-sniff the Visual Studio solution header and
       skip non-SLN files (`skipped_reason="visual_studio_solution"`)
 - [ ] Fixtures: an SDC and a UPF for the counter fixtures, a flow `.tcl`, a Perl

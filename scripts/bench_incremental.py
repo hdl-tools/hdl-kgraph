@@ -3,11 +3,11 @@
 
 Target: < 1.8 s (M5's dataflow edges grew the graph ~76%, lifting the budget
 from the original M4 < 1 s to < 1.5 s; precomputed whole-design summaries then
-added a fixed per-update pass, lifting it to < 1.8 s — see docs/benchmarks.md).
+added a fixed per-update pass, lifting it to < 1.8 s — see docs/scale/benchmarks.md).
 
 Generates a synthetic corpus (scripts/gen_corpus.py), times a full
 ``build``, touches one leaf module, then times the ``update``. See
-docs/benchmarks.md for the procedure and recorded results.
+docs/scale/benchmarks.md for the procedure and recorded results.
 
 Usage::
 
@@ -35,7 +35,7 @@ def main() -> int:
     # M4 measured 0.85 s against a < 1 s target; M5's dataflow edges grew the
     # graph ~76% and the budget to < 1.5 s. Precomputed whole-design summaries
     # (clock domains / UVM, so those tools read O(1) at any scale) add a fixed
-    # per-update cost, bumping the budget to < 1.8 s (see docs/benchmarks.md).
+    # per-update cost, bumping the budget to < 1.8 s (see docs/scale/benchmarks.md).
     parser.add_argument("--target-s", type=float, default=1.8)
     parser.add_argument(
         "--keep", type=Path, default=None, help="generate into this directory and keep it"

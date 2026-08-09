@@ -205,7 +205,7 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
     When *token* is given, the HTTP transport requires it as a bearer token
     (clients send ``Authorization: Bearer <token>``); requests without it are
     rejected. stdio is a local pipe with no network surface, so it needs none.
-    See issue #69 and docs/mcp.md.
+    See issue #69 and docs/usage/mcp.md.
     """
     try:
         from fastmcp import FastMCP
@@ -269,8 +269,17 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
 
     @mcp.tool
     def clock_domains() -> dict[str, Any]:
-        """Clock domains (with alias nets and process/signal counts) and
-        clock-domain-crossing suspects."""
+        """Clock domains (alias nets, declaring scope, process/signal counts)
+        and clock-domain-crossing suspects.
+
+        Read `cdc_analysis` BEFORE `cdc_suspect_count`. `"complete"` means the
+        crossing list is the full name-level result. `"degraded"` means clock
+        aliasing merged nets that only a shared formal port connects — a module
+        instantiated on more than one clock — so the affected domains are wrong
+        and crossings through them are invisible. `cdc_suspect_count` is then a
+        LOWER BOUND: do not report "no CDC issues" from it. The offending ports
+        and nets are listed in `alias_collapses`, and each affected domain
+        carries `collapsed: true`; read the RTL for those clocks instead."""
         return ctx.run(lambda q: q.clock_domains())
 
     @mcp.tool

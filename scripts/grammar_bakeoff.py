@@ -23,7 +23,7 @@ The ``--dump-tree`` mode is how the exact node-type names used by the parser
 dispatch tables (src/hdl_kgraph/parser/systemverilog.py and
 src/hdl_kgraph/parser/vhdl.py) were confirmed.
 
-Results and the grammar decision are recorded in docs/grammar-bakeoff.md.
+Results and the grammar decision are recorded in docs/internals/grammar-bakeoff.md.
 """
 
 from __future__ import annotations

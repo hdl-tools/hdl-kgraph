@@ -9,7 +9,7 @@ remaining O(design)-RAM cost — the `update` **write** path (#119).
 Reads (v1) and both whole-design summaries (M12.5: #147/#148) are out-of-core. The last
 O(design)-RAM cost is `update`: `pipeline._link_pass2` calls `SqliteStore.load()` to materialise
 the **entire** prior graph so `builder.link_incremental` can re-resolve the dirty closure.
-`docs/scalability.md` calls this "all-or-nothing" — the in-memory graph is consumed by entangled
+`docs/scale/scalability.md` calls this "all-or-nothing" — the in-memory graph is consumed by entangled
 passes: name resolution (`_Linker.definitions`/`children` seeded from every prior node/edge),
 `_gc_orphan_stubs` (keeps a stub iff it has **any** non-`DECLARES` edge), `derive_test_covers`
 (whole-graph scan), and the report counts.

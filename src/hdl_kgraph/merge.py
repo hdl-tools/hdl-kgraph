@@ -17,7 +17,7 @@ same ``--root`` (Mode A — all sources must share the build root). FILELIST and
 VHDL ``library`` adapter nodes are not in ``file_irs`` (they are generated fresh
 at build time); they are recovered directly from each source graph and unioned
 back in as synthetic adapter IRs, so VHDL-library and filelist designs merge
-faithfully too. See ``docs/merge-design.md``.
+faithfully too. See ``docs/usage/merge-design.md``.
 
 Out of scope: enrichment (whole-design; enriched sources are refused) and
 ``update`` on a merged database (it falls back to a full rebuild).
@@ -84,7 +84,7 @@ class MergeReport:
     warnings: list[str] = field(default_factory=list)
     # Wall-clock of the single pass-2 link over the unioned IRs, and of the
     # whole merge. The link is "paid once" no matter how many blocks merge —
-    # the value subtree caching trades a re-parse for (see docs/benchmarks.md).
+    # the value subtree caching trades a re-parse for (see docs/scale/benchmarks.md).
     link_s: float = 0.0
     elapsed_s: float = 0.0
 

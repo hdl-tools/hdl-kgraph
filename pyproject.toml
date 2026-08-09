@@ -31,7 +31,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
   "Topic :: Software Development :: Compilers",
 ]
-# Grammar choices: see docs/grammar-bakeoff.md (ROADMAP.md "Risks" #1 and #2).
+# Grammar choices: see docs/internals/grammar-bakeoff.md (ROADMAP.md "Risks" #1 and #2).
 # The tree-sitter stack is upper-bounded: its API churn is the project's #1
 # documented risk (the 0.21 -> 0.23 transition already broke the `Language`
 # constructor once), and an uncapped pin would let a future release break
@@ -54,7 +54,7 @@ watch = ["watchdog>=4"]
 mcp = ["fastmcp>=2"]
 # Precomputed-layout tier for `visualize` on large designs (BSD-3; both ship
 # pure-pip wheels everywhere). Optional: without it, visualize falls back to
-# the in-browser force simulation. See docs/viz-scalability.md.
+# the in-browser force simulation. See docs/scale/viz-scalability.md.
 layout = ["numpy>=1.24", "scipy>=1.10"]
 # M7 semantic enrichment (native frontends). Optional: `build --enrich` needs
 # these, and the default heuristic build never imports them (they are loaded
@@ -86,9 +86,9 @@ all = ["hdl-kgraph[watch,mcp,layout,enrich,bench]"]
 hdl-kgraph = "hdl_kgraph.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/chuanseng-ng/hdl-kgraph"
-Issues = "https://github.com/chuanseng-ng/hdl-kgraph/issues"
-Roadmap = "https://github.com/chuanseng-ng/hdl-kgraph/blob/main/ROADMAP.md"
+Homepage = "https://github.com/hdl-tools/hdl-kgraph"
+Issues = "https://github.com/hdl-tools/hdl-kgraph/issues"
+Roadmap = "https://github.com/hdl-tools/hdl-kgraph/blob/main/ROADMAP.md"
 
 [tool.hatch.version]
 path = "src/hdl_kgraph/__init__.py"

@@ -162,9 +162,9 @@ def test_schema_version_mismatch_raises(store) -> None:
 
 
 def test_old_database_is_refused(store) -> None:
-    """The summaries table bumped the schema to v8: an older (v7) database must
-    be refused with the rebuild message — rebuild *is* the migration."""
-    assert SCHEMA_VERSION == "8"
+    """``load()`` never migrates: an older (v7) database is refused with the
+    rebuild message, whatever ladder path ``migrate()`` might have taken."""
+    assert SCHEMA_VERSION == "9"
     sqlite_store, _, _ = store
     with sqlite3.connect(sqlite_store.db_path) as conn:
         conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
@@ -418,7 +418,7 @@ def _downgrade_to_v7(db_path: Path) -> None:
 
 def test_migrate_v7_to_v8_in_place(store) -> None:
     """A registered, IR-compatible step upgrades in place — no full reparse."""
-    assert SCHEMA_VERSION == "8"
+    assert SCHEMA_VERSION == "9"
     sqlite_store, _, _ = store
     _downgrade_to_v7(sqlite_store.db_path)
 
@@ -430,6 +430,25 @@ def test_migrate_v7_to_v8_in_place(store) -> None:
     assert meta["schema_version"] == SCHEMA_VERSION
     assert meta["ir_codec_version"]  # stamped by the migration
     assert sqlite_store.load_summary("clock_domains") is None
+
+
+def test_migrate_v8_to_v9_drops_the_stale_clock_summary(store) -> None:
+    """v8 payloads predate ``cdc_analysis``; the row must go, not be trusted.
+
+    A retained v8 blob would report a collapsed design as ``complete`` once a
+    reader defaults the missing status — the false clean bill #176 removes.
+    """
+    sqlite_store, _, _ = store
+    sqlite_store.save_summaries({"clock_domains": json.dumps({"domains": []})})
+    with sqlite3.connect(sqlite_store.db_path) as conn:
+        conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
+
+    assert sqlite_store.migrate() == "migrated"
+
+    # Gone, so the reader recomputes it out-of-core with the new fields.
+    assert sqlite_store.load_summary("clock_domains") is None
+    _, _, meta = sqlite_store.load()
+    assert meta["schema_version"] == SCHEMA_VERSION
 
 
 def test_migrate_current_database_is_a_noop(store) -> None:

@@ -8,7 +8,7 @@ that payoff measurable: it splits a synthetic corpus into N blocks, edits one,
 rebuilds only that block, re-merges, and shows the parse cost scales with the
 *changed block* while the pass-2 link is paid once.
 
-Generates a synthetic corpus (scripts/gen_corpus.py). See docs/benchmarks.md
+Generates a synthetic corpus (scripts/gen_corpus.py). See docs/scale/benchmarks.md
 for the procedure and recorded results.
 
 Usage::

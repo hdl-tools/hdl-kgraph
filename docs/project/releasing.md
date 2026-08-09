@@ -18,7 +18,7 @@ The package version is single-sourced from `__version__` in
 2. On PyPI: **Account settings → Publishing → Add a new pending publisher**
    (GitHub tab) with exactly:
    - PyPI project name: `hdl-kgraph`
-   - Owner: `chuanseng-ng`
+   - Owner: `hdl-tools`
    - Repository: `hdl-kgraph`
    - Workflow name: `release.yml`
    - Environment name: `pypi`

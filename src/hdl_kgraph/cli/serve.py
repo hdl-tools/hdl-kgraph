@@ -52,7 +52,7 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: st
     ``--http`` exposes the same tools over streamable HTTP instead. HTTP has
     no authentication unless you pass ``--token`` (or set
     ``HDL_KGRAPH_MCP_TOKEN``), so otherwise keep it bound to loopback (see
-    docs/mcp.md). The server only ever reads the database — rebuild with
+    docs/usage/mcp.md). The server only ever reads the database — rebuild with
     ``build``/``update`` (a running server picks up the new database
     automatically).
     """
@@ -97,7 +97,7 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: st
             f"warning: serving on {host} exposes your design's structure to the "
             "network with no authentication; pass --token (or set "
             "HDL_KGRAPH_MCP_TOKEN), or bind 127.0.0.1 unless every host is "
-            "trusted (see docs/mcp.md)",
+            "trusted (see docs/usage/mcp.md)",
             err=True,
         )
     server.run(transport="http", host=host, port=int(port_text))
@@ -165,7 +165,7 @@ def setup(
     if list_only:
         return
     if not detected:
-        raise CliError("no supported AI assistant detected; see docs/mcp.md for manual setup")
+        raise CliError("no supported AI assistant detected; see docs/usage/mcp.md for manual setup")
 
     if db_path is None:
         db_path = find_db(Path.cwd())

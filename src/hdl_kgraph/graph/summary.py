@@ -56,8 +56,55 @@ def _domain_scope(graph: nx.MultiDiGraph, clock_id: str) -> dict[str, Any]:
     }
 
 
+#: Cap on the collapse evidence list, mirroring the CDC top-50 cap: enough to
+#: act on, bounded so a pathological design cannot bloat the stored summary.
+MAX_ALIAS_COLLAPSES = 20
+
+
+def shape_alias_collapses(
+    domains: list[clocks.ClockDomain], label: dict[str, str]
+) -> list[dict[str, Any]]:
+    """The ``alias_collapses`` payload: which port merged which nets (#176).
+
+    *label* maps node id -> qualified name. Qualified, not short: a collapsed
+    domain's aliases are the *callee's* formal port names (``wr_clk_i``), which
+    match none of the design's own clock nets, so bare names in the evidence
+    would be unreadable next to the domain header.
+
+    Shared by both payload builders — :func:`clock_summary` and
+    ``storage.summaries.clock_summary_sql`` — so the order and the cap cannot
+    drift between the NetworkX and SQL paths.
+    """
+    rows = [
+        {
+            "clock": domain.clock_names[0] if domain.clock_names else domain.clock_id,
+            "port": label.get(site.formal_id, site.formal_id),
+            "nets": [label.get(net, net) for net in site.net_ids],
+        }
+        for domain in domains
+        if domain.collapsed
+        for site in domain.collapse_sites
+    ]
+    return rows[:MAX_ALIAS_COLLAPSES]
+
+
+def _node_label(graph: nx.MultiDiGraph, node_id: str) -> str:
+    """Qualified name of *node_id*, falling back to its bare name then its id."""
+    data = graph.nodes.get(node_id)
+    if not data:
+        return node_id
+    return str(data.get("qualified_name") or data.get("name") or node_id)
+
+
 def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
-    """The ``clock_domains`` tool payload: domains plus CDC suspects."""
+    """The ``clock_domains`` tool payload: domains plus CDC suspects.
+
+    ``cdc_analysis`` is ``"degraded"`` when any domain is ``collapsed`` (#176):
+    multi-instance clock aliasing merged distinct nets, so crossings through
+    those domains are invisible and ``cdc_suspect_count`` is a lower bound, not
+    a clean bill of health.
+    """
+    domain_objs = clocks.clock_domains(graph)
     domains = [
         {
             "clock": d.clock_names[0] if d.clock_names else d.clock_id,
@@ -66,13 +113,24 @@ def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
             "process_count": len(d.process_ids),
             "signal_count": len(d.signal_ids),
             "min_confidence": d.min_confidence,
+            "collapsed": d.collapsed,
         }
-        for d in clocks.clock_domains(graph)
+        for d in domain_objs
     ]
+    label = {
+        node_id: _node_label(graph, node_id)
+        for d in domain_objs
+        for site in d.collapse_sites
+        for node_id in (site.formal_id, *site.net_ids)
+    }
     suspects = clocks.cdc_suspects(graph)
     active = [s for s in suspects if not s.declared_safe]
     suppressed = [s for s in suspects if s.declared_safe]
     return {
+        # Read this before the counts below: on a degraded result the crossing
+        # list is incomplete by construction, not empty because the design is
+        # clean (#176).
+        "cdc_analysis": "degraded" if any(d.collapsed for d in domain_objs) else "complete",
         "domains": domains,
         "cdc_suspect_count": len(active),
         "cdc_suspects": jsonable(active[:50]),
@@ -80,6 +138,7 @@ def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
         # dropped, so a suppressed crossing stays visible (M10).
         "cdc_suppressed_count": len(suppressed),
         "cdc_suppressed": jsonable(suppressed[:50]),
+        "alias_collapses": shape_alias_collapses(domain_objs, label),
     }
 
 

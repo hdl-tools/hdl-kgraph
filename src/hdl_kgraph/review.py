@@ -67,6 +67,11 @@ def _clock_counts(payload: dict[str, Any]) -> dict[str, Any]:
         "cdc": {
             "suspect_count": payload.get("cdc_suspect_count", 0),
             "suppressed_count": payload.get("cdc_suppressed_count", 0),
+            # "degraded" means multi-instance clock aliasing collapsed domains,
+            # so suspect_count is a lower bound (#176). Both values are counts /
+            # a fixed string, so the digest stays free of design identifiers.
+            "analysis": payload.get("cdc_analysis", "unknown"),
+            "collapsed_domain_count": sum(1 for d in domains if d.get("collapsed")),
         },
     }
 

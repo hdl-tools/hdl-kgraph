@@ -1,8 +1,8 @@
 # Design: database merge — IP-block assembly & subtree caching
 
 > **Status: implemented** (`hdl-kgraph merge`, see
-> [CHANGELOG](../CHANGELOG.md)). This documents the `hdl-kgraph merge` feature
-> and why it is scoped the way it is. See [benchmarks.md](benchmarks.md) for the
+> [CHANGELOG](../../CHANGELOG.md)). This documents the `hdl-kgraph merge` feature
+> and why it is scoped the way it is. See [benchmarks.md](../scale/benchmarks.md) for the
 > timing evidence behind the scope. Subtree caching is a convention layered on
 > the merge command (see below) and ships no extra storage.
 
@@ -100,7 +100,11 @@ queryable graph database.
    scoped to SV-only / no-filelist and detect-and-refuses otherwise.**
 5. `graph, ref_records = link_graph(combined_irs)`.
 6. `summaries = build_summaries(graph)` (do **not** union source summaries —
-   they are whole-design). Reuse the kept `StoredUnit`s verbatim.
+   they are whole-design). Reuse the kept `StoredUnit`s verbatim. Expect
+   `cdc_analysis: "degraded"` (#176) to fire more often on a merged database
+   than on any single source: a merge is a union of independently-built graphs,
+   so the same module is reachable through more instantiation contexts and the
+   evidence connecting a shared formal's actuals is likelier to be missing.
 7. `SqliteStore(OUT).save(graph, files, root, units, ref_records, summaries,
    options_hash=<merged sentinel>)`. The sentinel (e.g. `"merged:" +
    sha(sorted source hashes)`) makes a later `update` fall back to full rebuild
@@ -155,7 +159,7 @@ The re-merged `soc.db` is byte-identical to a monolithic `build ./soc` of the
 whole tree. `merge` prints its link/total wall-clock so you can see the re-link
 is paid once and is cheap relative to the avoided parse;
 `scripts/bench_merge.py` quantifies the payoff (see
-[benchmarks.md](benchmarks.md)).
+[benchmarks.md](../scale/benchmarks.md)).
 
 **Conventions / caveats** (beyond the merge caveats below): keep one DB per
 block under a stable path (e.g. `cache/<block>.db`); use the *same* build

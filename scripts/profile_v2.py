@@ -4,7 +4,7 @@
 Milestone M11 of the v2.0 epic (GitHub #128) is a *decision gate*: it must pin
 the dominant cost of the v1 architecture and select the M12 path (rustworkx vs
 kuzu vs SQL-native scans). This script is the measurement tool; the written
-verdict lives in ``docs/v2/m11_profiling.md`` (PR 2).
+verdict lives in ``docs/project/v2/m11_profiling.md`` (PR 2).
 
 It profiles three cost centres at a sweep of design sizes and quantifies two
 splits the gate needs:
@@ -20,11 +20,11 @@ Peak RSS is attributed cleanly by running each stage in its own child process
 process contaminate each other). Memory is split three ways — fetch-only vs
 graph-with-raw-attrs vs full load — and cross-checked against ``tracemalloc``.
 The sweep is normalised to bytes/node and time/node and extrapolated (with R²)
-to the 10-100 GB regime that ``docs/scalability.md`` says "does not load".
+to the 10-100 GB regime that ``docs/scale/scalability.md`` says "does not load".
 
 Stdlib only (``resource``/``tracemalloc``/``/proc``); no new runtime deps.
 Linux-only for the RSS numbers (``ru_maxrss`` in KiB, ``/proc/self/statm``),
-matching the ``docs/benchmarks.md`` container baselines.
+matching the ``docs/scale/benchmarks.md`` container baselines.
 
 Usage::
 

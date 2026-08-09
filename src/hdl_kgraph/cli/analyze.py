@@ -419,6 +419,9 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
     )
     if a["cdc"].get("suppressed_count"):
         cdc_line += f" ({a['cdc']['suppressed_count']} SDC-suppressed)"
+    if a["cdc"].get("analysis") == "degraded":
+        # The count above is a lower bound: collapsed domains hide crossings.
+        cdc_line += f"  [DEGRADED: {a['cdc']['collapsed_domain_count']} collapsed domain(s)]"
     click.echo(cdc_line)
     if a.get("power", {}).get("domain_count"):
         p = a["power"]
@@ -800,7 +803,7 @@ def visualize(
     Large designs route to
     a precomputed 'static' layout so the graph view paints without a
     client-side simulation freeze; ``--collapse`` shows one supernode per
-    subsystem instead of every unit (see docs/viz-scalability.md).
+    subsystem instead of every unit (see docs/scale/viz-scalability.md).
 
     ``--kinds`` / ``--exclude-kinds`` restrict the plot to the node kinds of
     interest so the layout is solved over a smaller, more compact graph (e.g.
@@ -867,7 +870,7 @@ def export_cmd(db_path: Path | None, output: Path | None, fmt: str) -> None:
 
     The escape hatch for designs too large for the inline HTML artifact:
     Gephi (OpenOrd/ForceAtlas2) and Cytoscape handle graphs the browser
-    cannot (see docs/viz-scalability.md).
+    cannot (see docs/scale/viz-scalability.md).
     """
     from hdl_kgraph.export import export_graph
 

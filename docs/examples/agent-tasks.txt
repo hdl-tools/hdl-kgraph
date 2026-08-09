@@ -1,5 +1,5 @@
 # Task list for `hdl-kgraph bench agent` — the exact three questions behind the
-# live A/B numbers recorded in docs/benchmarks.md ("Recorded results (live)").
+# live A/B numbers recorded in docs/scale/benchmarks.md ("Recorded results (live)").
 #
 # Format: one task prompt per line. Blank lines and `#` comments are ignored.
 #

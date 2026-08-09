@@ -86,6 +86,122 @@ def test_reset_tree_groups_by_net(graph) -> None:
     assert rst.min_confidence == 1.0
 
 
+# --------------------------------------------------------------------------- #
+# #176: multi-instance clock aliasing collapses distinct domains
+# --------------------------------------------------------------------------- #
+def _sv_graph(fixtures_dir: Path, *names: str):
+    sv = SystemVerilogParser()
+    return build_graph([sv.parse(Path(n), (fixtures_dir / n).read_text()) for n in names])
+
+
+def test_swapped_instantiation_collapses_and_is_flagged(fixtures_dir: Path) -> None:
+    """The motivating bug: one dual-clock module, two instances, actuals swapped.
+
+    The collapse itself is not fixed — name-level aliasing cannot separate the
+    nets — but it must no longer be silent.
+    """
+    g = _sv_graph(fixtures_dir, "multi_instance_clock.sv")
+    domains = clocks.clock_domains(g)
+
+    # Still one merged domain, and still no crossings: this is the false zero.
+    assert len(domains) == 1
+    assert clocks.cdc_suspects(g) == []
+    # ...but it is now reported as such.
+    assert domains[0].collapsed is True
+    assert domains[0].collapse_sites
+
+
+def test_collapse_names_the_conflicting_nets(fixtures_dir: Path) -> None:
+    g = _sv_graph(fixtures_dir, "multi_instance_clock.sv")
+    (domain,) = clocks.clock_domains(g)
+
+    ports = {g.nodes[s.formal_id]["name"] for s in domain.collapse_sites}
+    assert ports == {"wr_clk_i", "rd_clk_i"}
+    for site in domain.collapse_sites:
+        assert {g.nodes[n]["name"] for n in site.net_ids} == {"s_clk_i", "m_clk_i"}
+
+
+def test_collapse_ignores_data_ports(fixtures_dir: Path) -> None:
+    """`d_i`/`q_o` also bind two actuals; only clock-domain roots may be flagged.
+
+    Without that gate the predicate fires on every data port of every multiply
+    instantiated leaf — i.e. on every design.
+    """
+    g = _sv_graph(fixtures_dir, "multi_instance_clock.sv")
+    flagged = {
+        g.nodes[s.formal_id]["name"] for d in clocks.clock_domains(g) for s in d.collapse_sites
+    }
+    assert not flagged & {"d_i", "q_o"}
+
+
+def test_shared_leaf_across_parents_is_not_flagged(fixtures_dir: Path) -> None:
+    """A leaf instantiated under two parents binds one formal to two distinct
+    actuals — but both trace to one grandparent clock through single-actual
+    bindings, so the merge is corroborated and must not be reported."""
+    g = _sv_graph(fixtures_dir, "shared_leaf_clock.sv")
+    assert [d.collapsed for d in clocks.clock_domains(g)] == [False]
+
+
+def test_ordinary_hierarchy_is_not_flagged(graph) -> None:
+    """The canonical fixture instantiates its child once: nothing to collapse."""
+    assert not any(d.collapsed for d in clocks.clock_domains(graph))
+
+
+def test_reset_groups_collapse_the_same_way(fixtures_dir: Path) -> None:
+    """Resets alias through the same shared formals, so they collapse too.
+
+    The clock in this fixture is bound to the same actual by both instances,
+    so it must stay unflagged — the marking is per net, not per module.
+    """
+    g = _sv_graph(fixtures_dir, "multi_instance_reset.sv")
+
+    (group,) = clocks.reset_tree(g)
+    assert group.reset_names == ["a_rst_n_i", "b_rst_n_i"]
+    assert group.collapsed is True
+    assert [d.collapsed for d in clocks.clock_domains(g)] == [False]
+
+
+def test_ordinary_reset_tree_is_not_flagged(graph) -> None:
+    assert not any(r.collapsed for r in clocks.reset_tree(graph))
+
+
+def test_alias_collapses_detects_the_swapped_binding_cycle() -> None:
+    """Swapped bindings make the formals and actuals a 4-cycle (K2,2).
+
+    Neither formal is then a cut vertex, so an articulation-point test reports
+    nothing here — the whole point of corroborating with single-actual edges.
+    """
+    pairs = [("F_wr", "clk_a"), ("F_rd", "clk_b"), ("F_wr", "clk_b"), ("F_rd", "clk_a")]
+    uf = clocks.alias_uf(pairs)
+    root = uf.find("F_wr")
+
+    collapses = clocks.alias_collapses(pairs, uf, {root})
+
+    assert {s.formal_id for s in collapses[root]} == {"F_wr", "F_rd"}
+    assert collapses[root][0].net_ids == ("clk_a", "clk_b")
+
+
+def test_alias_collapses_stays_silent_on_corroborated_and_single_bindings() -> None:
+    # Same leaf, same actual net twice: nothing was aggregated.
+    same = [("F", "clk"), ("F", "clk")]
+    uf = clocks.alias_uf(same)
+    assert clocks.alias_collapses(same, uf, {uf.find("F")}) == {}
+
+    # The leaf's formal F binds two distinct actuals (the two parents' clock
+    # ports), but each parent port is itself bound singly to one grandparent
+    # clock — unaggregated evidence that they are the same net after all.
+    corroborated = [("F", "pa_clk"), ("F", "pb_clk"), ("pa_clk", "top_clk"), ("pb_clk", "top_clk")]
+    uf = clocks.alias_uf(corroborated)
+    assert clocks.alias_collapses(corroborated, uf, {uf.find("F")}) == {}
+
+
+def test_alias_collapses_respects_the_domain_root_gate() -> None:
+    pairs = [("F", "a"), ("F", "b")]
+    uf = clocks.alias_uf(pairs)
+    assert clocks.alias_collapses(pairs, uf, set()) == {}  # not a clock root
+    assert clocks.alias_collapses(pairs, uf, {uf.find("F")})  # is one
+
+
 @pytest.mark.parametrize(
     "name",
     [

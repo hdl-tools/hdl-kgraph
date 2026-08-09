@@ -15,7 +15,7 @@ into NetworkX.
 The result is byte-identical to :func:`hdl_kgraph.graph.summary.clock_summary`
 — ``tests/test_summaries_sql.py`` pins that parity against the NetworkX oracle.
 The key reformulation that makes it possible (validated on a real design in
-``scripts/spike_m12_clocks.py``, see ``docs/v2/m12_real_design.md``) is that the
+``scripts/spike_m12_clocks.py``, see ``docs/project/v2/m12_real_design.md``) is that the
 union-find over net aliases assigns each node the lexicographically-smallest id
 in its connected component — so reusing :class:`hdl_kgraph.graph.clocks._UnionFind`
 over the SQL-derived alias pairs reproduces the oracle's roots exactly, with no
@@ -58,17 +58,37 @@ def clock_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
     directly from *conn* (a read-only connection) instead of a materialised
     graph. See the module docstring for the bounded-RAM contract.
     """
-    uf = _alias_uf(conn)
+    pairs = _alias_pairs(conn)
+    uf = clocks.alias_uf(pairs)
     find = uf.find  # un-aliased ids resolve to themselves, as in the oracle
+    domain_roots = {
+        find(root)
+        for (root,) in conn.execute(
+            "SELECT DISTINCT dst FROM edges WHERE kind = ?", (EdgeKind.CLOCKED_BY.value,)
+        )
+    }
+    collapses = clocks.alias_collapses(pairs, uf, domain_roots)
     suspects = _cdc_suspects(conn, find)
     active = [s for s in suspects if not s["declared_safe"]]
     suppressed = [s for s in suspects if s["declared_safe"]]
+    domain_objs = _clock_domain_objs(conn, find, collapses)
+    label = _labels_of(
+        conn,
+        {
+            node_id
+            for d in domain_objs
+            for site in d.collapse_sites
+            for node_id in (site.formal_id, *site.net_ids)
+        },
+    )
     return {
-        "domains": _clock_domains(conn, find),
+        "cdc_analysis": "degraded" if collapses else "complete",
+        "domains": _clock_domains(conn, domain_objs),
         "cdc_suspect_count": len(active),
         "cdc_suspects": active[:50],
         "cdc_suppressed_count": len(suppressed),
         "cdc_suppressed": suppressed[:50],
+        "alias_collapses": summary.shape_alias_collapses(domain_objs, label),
     }
 
 
@@ -255,9 +275,31 @@ def _scopes_of(conn: sqlite3.Connection, node_ids: set[str]) -> dict[str, dict[s
     return out
 
 
-def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
-    """Domains keyed by alias-root, mirroring ``clocks.clock_domains`` + the
-    ``summary.clock_summary`` shaping (names stripped to counts upstream)."""
+def _labels_of(conn: sqlite3.Connection, node_ids: set[str]) -> dict[str, str]:
+    """``id -> qualified_name or name``, for the alias-collapse evidence (#176).
+
+    ``COALESCE(NULLIF(qualified_name, ''), name)`` matches the oracle's
+    ``qualified_name or name`` on the empty string, which the parity test pins.
+    """
+    out: dict[str, str] = {}
+    for chunk in _chunks(node_ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        for node_id, label in conn.execute(
+            "SELECT id, COALESCE(NULLIF(qualified_name, ''), name) "
+            f"FROM nodes WHERE id IN ({placeholders})",
+            tuple(chunk),
+        ):
+            out[node_id] = label or node_id
+    return out
+
+
+def _clock_domain_objs(
+    conn: sqlite3.Connection,
+    find: Any,
+    collapses: dict[str, list[clocks.AliasCollapse]],
+) -> list[clocks.ClockDomain]:
+    """``clocks.ClockDomain`` records from SQLite, mirroring the oracle's
+    ``clocks.clock_domains`` (including the #176 ``collapsed`` marking)."""
     names: dict[str, set[str]] = defaultdict(set)
     process_ids: dict[str, list[str]] = defaultdict(list)
     min_conf: dict[str, float] = defaultdict(lambda: 1.0)
@@ -276,8 +318,7 @@ def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
     # process_ids list counts toward process_count but drives nothing relevant).
     all_procs = {p for procs in process_ids.values() for p in procs}
     proc_kind = _kinds_of(conn, all_procs)
-    scopes = _scopes_of(conn, set(names))
-    domains: list[dict[str, Any]] = []
+    domains: list[clocks.ClockDomain] = []
     for root, aliases_set in names.items():
         driven: set[str] = set()
         for proc in process_ids[root]:
@@ -288,19 +329,40 @@ def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
                 (EdgeKind.DRIVES.value, proc),
             ):
                 driven.add(find(sig))
-        aliases = sorted(aliases_set)
+        sites = collapses.get(root, [])
         domains.append(
-            {
-                "clock": aliases[0],
-                "aliases": aliases,
-                **scopes.get(root, {"qualified_name": None, "file": None, "line": None}),
-                "process_count": len(process_ids[root]),
-                "signal_count": len(driven),
-                "min_confidence": min_conf[root],
-            }
+            clocks.ClockDomain(
+                clock_id=root,
+                clock_names=sorted(aliases_set),
+                process_ids=sorted(process_ids[root]),
+                signal_ids=sorted(driven),
+                min_confidence=min_conf[root],
+                collapsed=bool(sites),
+                collapse_sites=sites,
+            )
         )
-    domains.sort(key=lambda d: d["aliases"][0])
+    domains.sort(key=lambda d: d.clock_names[0])
     return domains
+
+
+def _clock_domains(
+    conn: sqlite3.Connection, domain_objs: list[clocks.ClockDomain]
+) -> list[dict[str, Any]]:
+    """The ``domains`` payload entries, mirroring the ``summary.clock_summary``
+    shaping (names stripped to counts upstream)."""
+    scopes = _scopes_of(conn, {d.clock_id for d in domain_objs})
+    return [
+        {
+            "clock": d.clock_names[0],
+            "aliases": d.clock_names,
+            **scopes.get(d.clock_id, {"qualified_name": None, "file": None, "line": None}),
+            "process_count": len(d.process_ids),
+            "signal_count": len(d.signal_ids),
+            "min_confidence": d.min_confidence,
+            "collapsed": d.collapsed,
+        }
+        for d in domain_objs
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -312,7 +374,9 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     union-find). Bounded: scans only RESETS edges + the alias pairs, never the
     whole graph. Keys match ``ResetGroup`` field order so the CLI ``--json`` is
     identical to the dataclass path."""
-    find = _alias_uf(conn).find
+    pairs = _alias_pairs(conn)
+    uf = clocks.alias_uf(pairs)
+    find = uf.find
     names: dict[str, set[str]] = defaultdict(set)
     process_ids: dict[str, list[str]] = defaultdict(list)
     is_async: dict[str, bool] = defaultdict(bool)
@@ -328,6 +392,7 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             process_ids[root].append(src)
         is_async[root] = is_async[root] or bool(async_flag)
         min_conf[root] = min(min_conf[root], conf)
+    collapsed = clocks.alias_collapses(pairs, uf, set(names))
     groups: list[dict[str, Any]] = [
         {
             "reset_id": root,
@@ -335,6 +400,7 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "is_async": is_async[root],
             "process_ids": sorted(process_ids[root]),
             "min_confidence": min_conf[root],
+            "collapsed": root in collapsed,
         }
         for root, nameset in names.items()
     ]

@@ -4,7 +4,7 @@
 M12.5 (#147/#148) put the whole-design *reads* out-of-core. The last O(design)-RAM
 cost is the `update` **write** path: `pipeline._link_pass2` calls `SqliteStore.load()`
 to materialise the *entire* prior graph, which `builder.link_incremental` mutates in
-place. `docs/scalability.md` calls this "all-or-nothing" because the in-memory graph is
+place. `docs/scale/scalability.md` calls this "all-or-nothing" because the in-memory graph is
 consumed by entangled passes — name resolution (`_Linker` indexes seeded from every
 prior node/edge), `_gc_orphan_stubs` (keeps a stub iff it has any non-DECLARES edge),
 `derive_test_covers` (whole-graph scan), and the report counts.
