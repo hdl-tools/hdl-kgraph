@@ -30,6 +30,18 @@ graphml|gexf|json`).
   -asynchronous` or `set_false_path` covering a crossing marks it
   `declared_safe`, and the report partitions it out of the active list (a
   `cdc_suppressed_count` keeps it visible); everything else is worth reviewing.
+- **A module instantiated on more than one clock degrades the CDC report.**
+  Aliasing is name-level, so a module has one node per formal port shared by
+  every instance of it; binding it to different actuals merges those actuals
+  with each other. Two asynchronous clocks then become one domain, and nothing
+  "crosses" within a domain — so the crossings become invisible rather than
+  reported. The analysis detects this (a formal binding nets that no
+  single-actual, and therefore unaggregated, port binding also connects),
+  marks the domain `collapsed`, and reports `cdc_analysis: "degraded"` with the
+  offending ports and nets in `alias_collapses`. **`cdc_suspect_count` is then
+  a lower bound, not a clean bill of health.** Detection is not recovery:
+  separating the nets needs per-instance identity, i.e. elaboration. Reset
+  groups collapse the same way and carry the same `collapsed` flag.
 - **Power domains** (`query power-domains`, UPF M10) list each
   `create_power_domain` with its resolved element instances and its
   isolation/retention strategies — the power-intent analogue of the

@@ -100,7 +100,11 @@ queryable graph database.
    scoped to SV-only / no-filelist and detect-and-refuses otherwise.**
 5. `graph, ref_records = link_graph(combined_irs)`.
 6. `summaries = build_summaries(graph)` (do **not** union source summaries —
-   they are whole-design). Reuse the kept `StoredUnit`s verbatim.
+   they are whole-design). Reuse the kept `StoredUnit`s verbatim. Expect
+   `cdc_analysis: "degraded"` (#176) to fire more often on a merged database
+   than on any single source: a merge is a union of independently-built graphs,
+   so the same module is reachable through more instantiation contexts and the
+   evidence connecting a shared formal's actuals is likelier to be missing.
 7. `SqliteStore(OUT).save(graph, files, root, units, ref_records, summaries,
    options_hash=<merged sentinel>)`. The sentinel (e.g. `"merged:" +
    sha(sorted source hashes)`) makes a later `update` fall back to full rebuild

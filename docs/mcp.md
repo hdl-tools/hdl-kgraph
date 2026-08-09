@@ -138,7 +138,7 @@ case-insensitively everywhere.
 | `who_instantiates` | `name`, `limit`, `offset` | every instantiation site of a unit |
 | `port_map` | `module`, `instance` | ports/parameters in declaration order; with `instance`, its connection bindings |
 | `impact_of_change` | `target` (file or unit), `max_depth`, `limit`, `offset` | "what breaks if this changes?" — summary first, then affected units nearest-first |
-| `clock_domains` | — | clock domains with alias nets, the declaring scope (`qualified_name`/`file`/`line`, so identically-named domains stay distinguishable), process/signal counts, plus CDC suspects |
+| `clock_domains` | — | clock domains with alias nets, the declaring scope (`qualified_name`/`file`/`line`, so identically-named domains stay distinguishable), process/signal counts, plus CDC suspects and `cdc_analysis` (`complete`/`degraded` — `degraded` means multi-instance clock aliasing merged distinct nets, so `cdc_suspect_count` is a lower bound and not a clean bill of health; `alias_collapses` names the ports and nets) |
 | `find_signal_drivers` | `signal`, `module`, `readers`, `limit`, `offset` | "what drives signal X in module Y?" (`readers=true` for the readers) |
 | `uvm_topology` | — | UVM components by role and testbench→DUT `TEST_COVERS` links |
 | `search_nodes` | `name` glob, `kinds` (e.g. `module`, `signal`, `class`), `file` glob, `limit`, `offset` | anything else — the general node search |

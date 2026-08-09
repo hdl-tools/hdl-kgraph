@@ -11,6 +11,43 @@ the major version, and schema changes ship with a migration.
 
 ### Fixed
 
+- **Multi-instance clock aliasing reported zero CDC suspects instead of
+  admitting it could not tell.** A module has one node per formal port, shared
+  by every instance of it, so instantiating it twice with different actuals
+  unioned those actuals with each other through the shared formal. Two
+  asynchronous clocks became one domain — and once they are one domain nothing
+  "crosses" between them, so `clock_domains` returned `cdc_suspect_count: 0` on
+  exactly the structure the analysis exists to find, indistinguishably from a
+  clean design. On the validation SoC a single domain swallowed every clock in
+  the design and the report showed no crossings at all.
+
+  Separating the nets needs per-instance identity (elaboration) and is not
+  attempted here; the collapse is now **detected and reported** rather than
+  silent. A formal port is a collapse site when it binds two or more distinct
+  actuals, its alias-root is a clock-domain root, and those actuals are not
+  also joined by *single-actual* alias edges — a formal bound to one net
+  aggregated nothing and is therefore trustworthy corroboration. (A cut-vertex
+  test does not work: swapped bindings make the two formals and two actuals a
+  4-cycle, so neither formal disconnects the actuals when removed.)
+
+  The `clock_domains` payload gains `cdc_analysis` (`"complete"`/`"degraded"`),
+  a per-domain `collapsed` flag, and `alias_collapses` naming each offending
+  port and the nets it merged; `reset_tree` groups gain the same `collapsed`
+  flag. `cdc_suspect_count` keeps its type — every suspect found is still real,
+  so it is a lower bound rather than wrong — and the MCP tool contract now
+  states that `cdc_analysis` is read first. On the validation SoC this turns
+  one silently wrong answer into ten named collapse sites. `query cdc` no
+  longer prints "no CDC suspects found" on a degraded design.
+
+  Aliasing also now resolves *every* candidate formal for an instance whose
+  module name has two definitions, rather than the first: the NetworkX and SQL
+  paths disagreed there, which a new parity fixture pins.
+
+  **Schema 8 → 9, migrated in place** (no rebuild): a v8 clock summary predates
+  these fields, and a reader defaulting the missing status would report a
+  collapsed design as complete. The migration drops the stale summary row so
+  the reader recomputes it out-of-core.
+
 - **Resets with a port suffix were classified as clocks.** The reset-name
   pattern anchored `$` immediately after the optional polarity, so `rst_n`
   matched but `rst_n_i` did not — and `_i`/`_o` port suffixes are a common

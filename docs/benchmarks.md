@@ -501,6 +501,17 @@ Per task, median of 4 repetitions:
   design that instantiates a module on more than one clock. That is the honest
   scope of the tool today, and it is why this row is kept in the table.
 
+  **The tool now says so itself (#176).** It detects the collapse and reports
+  `cdc_analysis: "degraded"` with the offending ports and nets, instead of a
+  bare `cdc_suspect_count: 0`. On the validation SoC that turns one silently
+  wrong answer into ten named collapse sites — including the
+  `cdc_gray_fifo.wr_clk_i binds async_axi_fifo.{m,s}_clk_i` pair this issue was
+  filed about. That converts a silent false negative into a visible gap; it
+  does **not** recover the crossings, which still needs elaboration. The
+  −45.6% figure above predates the change and has not been re-measured, and
+  there is no reason to expect it to improve: removing a wrong answer is not
+  the same as supplying a right one. Re-measure before quoting a new number.
+
 **An earlier 3-task run reported 67.9%.** That set contained none of the
 questions grep wins. Adding one `port-map` task moved the headline from 67.9%
 to 51.6% — a 16-point swing from a single task. Treat any figure from this tier

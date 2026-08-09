@@ -22,7 +22,7 @@ hdl-kgraph review --json --metrics            # + fan-in/hub/community metrics (
 | `corpus` (parse health) | `parse_error_count`, `files_with_errors`, `preprocessor_warnings` | **is the parse sound?** |
 | `graph` | `node_count`, `edge_count`, `node_kinds`, `edge_kinds` | design shape; dataflow present (non-zero `clocked_by`/`drives`/`reads`) |
 | `link_quality` | `unresolved_stub_count` + ratio, `edge_confidence_distribution` | **how much resolved / how confident** |
-| `analyses` | `clock_domains` (per-domain counts), `cdc.suspect_count`, `uvm` counts, optional `metrics` | analysis results as numbers |
+| `analyses` | `clock_domains` (per-domain counts), `cdc.suspect_count`, `cdc.analysis` + `cdc.collapsed_domain_count` (whether that count can be trusted — see #176), `uvm` counts, optional `metrics` | analysis results as numbers |
 | `timings_s` | per-phase build wall-clock (`discover/parse/link/enrich/persist`) | performance; `null` on pre-1.8 DBs |
 
 Because the schema is stable (`"schema": "hdl-kgraph.review/1"`), two snapshots **diff**

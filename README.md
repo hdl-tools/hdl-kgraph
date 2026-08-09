@@ -179,7 +179,9 @@ bound, not a prediction, and the docs say so.
 - **Verification:** SV classes (UVM hierarchies via inheritance chains),
   constraints, covergroups, assertions/properties/sequences, clocking blocks
 - **Dataflow:** signal drivers/readers (process-, assign-, and
-  instance-level), clock and reset trees, CDC-suspect crossings
+  instance-level), clock and reset trees, CDC-suspect crossings — a design that
+  instantiates a module on more than one clock is reported as `degraded` rather
+  than as having no crossings ([#176](https://github.com/hdl-tools/hdl-kgraph/issues/176))
 
 Modports, checkers, UDPs, and generate blocks are *not* extracted yet. The
 full list, the confidence convention, and the schema pointers live in
