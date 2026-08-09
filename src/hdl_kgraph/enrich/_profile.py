@@ -1,7 +1,7 @@
 """Lightweight phase profiler for the enrichment pass (pass-3 breakdown).
 
 The whole-design ``--enrich`` pass is, on large designs, the dominant build
-cost (see ``docs/benchmarks.md``), yet ``--timings`` only reports it as a single
+cost (see ``docs/scale/benchmarks.md``), yet ``--timings`` only reports it as a single
 ``enrich (pass 3)`` line. This profiler splits that line into the phases the
 backends actually spend time in — slang's parse / elaborate / tree-walk stages
 and the graph delta-apply — so it is clear *which* part to optimize.

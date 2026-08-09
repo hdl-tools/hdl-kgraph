@@ -285,7 +285,7 @@ this is Phase 1 for a reason.
    `bench_incremental.py`: generate the 2000-file corpus (optionally with a
    fan-out knob to push past 10k modules), build, time `render_html` for
    projection/full/collapsed, report payload bytes; record results in
-   `docs/benchmarks.md` with targets (e.g. full-mode 14k-node render < 10 s,
+   `docs/scale/benchmarks.md` with targets (e.g. full-mode 14k-node render < 10 s,
    payload < 5 MB compressed).
 4. **Determinism:** same database → byte-identical HTML across runs (seeded
    Louvain + seeded layout), asserted in a test — keeps artifacts diffable in

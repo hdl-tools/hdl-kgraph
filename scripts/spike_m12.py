@@ -6,7 +6,7 @@ Milestone M12 of the v2.0 epic (#128) is a decision gate: M11 showed
 whole NetworkX graph is the binding constraint** (~2.3x on-disk; a 100 GB design
 needs ~225 GB RAM). M12 evaluates whether an off-the-shelf layer avoids that wall,
 across three tracks: SQL-native scans (this PR), `rustworkx` (in-memory), and
-`kuzu` (out-of-core). The written verdict lands in `docs/v2/m12_graph_layer.md`.
+`kuzu` (out-of-core). The written verdict lands in `docs/project/v2/m12_graph_layer.md`.
 
 Method: run one **representative whole-design scan** on each available backend,
 assert byte-identical parity against the NetworkX path (the oracle), then measure

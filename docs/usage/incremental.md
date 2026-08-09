@@ -8,7 +8,7 @@ The database is a derived cache that stays fresh as you edit.
 files that `` `include `` an edited header or expand a macro it defines —
 and re-links everything else from stored parse results. One file edited in
 a 2000-file design updates in about 1.5 s (budget < 1.8 s); see
-[benchmarks.md](benchmarks.md).
+[benchmarks.md](../scale/benchmarks.md).
 
 The database write is scoped to the change too: when the pass-2 link is
 incremental, `save_incremental` reads and rewrites only the dirty closure's
@@ -19,7 +19,7 @@ is byte-identical to a full rebuild. As of v2.0 the incremental link is itself
 memory-bounded by default: it re-resolves the dirty closure straight from SQLite
 (selective IR decode, out-of-core `TEST_COVERS`) instead of loading the prior
 graph, so neither the read nor the write scales with the design — see
-[scalability.md](scalability.md).
+[scalability.md](../scale/scalability.md).
 
 A change to the effective build inputs (defines, incdirs, filelists,
 library map) falls back to a full rebuild automatically, as does a database

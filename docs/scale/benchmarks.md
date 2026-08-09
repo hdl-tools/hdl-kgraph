@@ -233,7 +233,7 @@ of their cached IRs plus that single link, so it wins whenever parse dominates
 the parse saving, so the script gates on the parse-cost claim, not end-to-end
 wall-clock. The same caveats as the merge command apply (same-root, syntactic
 graph only, preprocessing-self-contained blocks) — see
-[merge-design.md](merge-design.md).
+[merge-design.md](../usage/merge-design.md).
 
 ## Context savings: what an assistant pays per question
 

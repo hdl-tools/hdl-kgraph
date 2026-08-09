@@ -317,7 +317,7 @@ def _scan_kuzu(db: Path) -> dict[str, Any]:
     # UNION recursive CTE), so cost grows combinatorially with the depth bound on the
     # cyclic/symmetric alias graph — *1..30 hangs. A small cap covers real alias-chain
     # depth (hierarchy hops) here; a production kuzu port would use a WCC algorithm
-    # extension instead. See docs/v2/m12_real_design.md.
+    # extension instead. See docs/project/v2/m12_real_design.md.
     root = {a: b for a, b in rows("MATCH (a:Node)-[:Alias*1..10]->(b:Node) RETURN a.id, MIN(b.id)")}
     find = lambda x: root.get(x, x)  # noqa: E731
     kind = {r[0]: r[1] for r in rows("MATCH (n:Node) RETURN n.id, n.kind")}

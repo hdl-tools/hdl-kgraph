@@ -15,7 +15,7 @@ into NetworkX.
 The result is byte-identical to :func:`hdl_kgraph.graph.summary.clock_summary`
 — ``tests/test_summaries_sql.py`` pins that parity against the NetworkX oracle.
 The key reformulation that makes it possible (validated on a real design in
-``scripts/spike_m12_clocks.py``, see ``docs/v2/m12_real_design.md``) is that the
+``scripts/spike_m12_clocks.py``, see ``docs/project/v2/m12_real_design.md``) is that the
 union-find over net aliases assigns each node the lexicographically-smallest id
 in its connected component — so reusing :class:`hdl_kgraph.graph.clocks._UnionFind`
 over the SQL-derived alias pairs reproduces the oracle's roots exactly, with no

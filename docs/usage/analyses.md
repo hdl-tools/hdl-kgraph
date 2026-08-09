@@ -128,7 +128,7 @@ local context stands out.
 - A payload still past the inline size limit *after compression* is refused
   with guidance (drop `--full`, narrow with `--top`, or `export`);
   `--force-inline` writes it anyway.
-- Scaling strategy for very large designs: [viz-scalability.md](viz-scalability.md).
+- Scaling strategy for very large designs: [viz-scalability.md](../scale/viz-scalability.md).
 
 `export` is the escape hatch for designs too large for the inline HTML
 artifact: `--format graphml|gexf|json` writes the graph for Gephi

@@ -73,7 +73,7 @@ recomputing the report, and both summary families now do so **out-of-core**
 - **Clock domains / CDC** (`clock_summary_sql`): computed straight from SQLite — the
   net-alias union-find reduces to connected components over the derived dataflow edges,
   reusing `clocks._UnionFind` over a SQL-derived pair list — without ever materializing
-  the graph (validated on a real design in [v2/m12_real_design.md](v2/m12_real_design.md)).
+  the graph (validated on a real design in [v2/m12_real_design.md](../project/v2/m12_real_design.md)).
 - **Reset tree** (`reset_summary_sql`): `RESETS` edges grouped by canonical reset net via
   the *same* net-alias union-find as the clock report — bounded by the `RESETS` edges plus
   the alias pairs. Computed this way on every call (there is no persisted reset summary);
@@ -134,7 +134,7 @@ back from the DB (M12.5 SQL scans). It is **byte-identical** to a full `build` �
 single-file edit re-resolves ~1.9 k rows vs a 14 k-row full load; `hdl-kgraph
 bench-link` reports the per-design locality (a median edit re-resolves ~0.4 % of
 refs there). The dev spike (`scripts/spike_m13_link.py`,
-[v2/m13_link_spike.md](v2/m13_link_spike.md)) proved the kernels first.
+[v2/m13_link_spike.md](../project/v2/m13_link_spike.md)) proved the kernels first.
 `hdl-kgraph update` now takes this path by default; `--no-bounded-link` falls back
 to the in-memory re-link. So item (1) is bounded on the default path. Scope is
 the SV incremental path (`incremental_link_safe`); VHDL / binds / enrich fall back

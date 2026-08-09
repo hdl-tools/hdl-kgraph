@@ -9,7 +9,7 @@ whole graph (v0.9), so queries stay fast even on a 10–100+ GB design and a
 rebuild by `hdl-kgraph build`/`update` is observed automatically with no
 staleness window. The whole-design reports (`clock_domains`, `uvm_topology`) are
 precomputed at build time and read as a small blob. See
-[docs/scalability.md](docs/scalability.md).
+[docs/scale/scalability.md](../scale/scalability.md).
 
 Requires the `mcp` extra:
 

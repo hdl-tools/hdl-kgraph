@@ -205,7 +205,7 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
     When *token* is given, the HTTP transport requires it as a bearer token
     (clients send ``Authorization: Bearer <token>``); requests without it are
     rejected. stdio is a local pipe with no network surface, so it needs none.
-    See issue #69 and docs/mcp.md.
+    See issue #69 and docs/usage/mcp.md.
     """
     try:
         from fastmcp import FastMCP

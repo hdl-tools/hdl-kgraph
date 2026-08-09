@@ -3,7 +3,7 @@
 Implementation notes:
 
 * One grammar serves both ``.v`` and ``.sv``: ``tree-sitter-systemverilog``
-  (gmlarumbe), chosen by the bake-off recorded in docs/grammar-bakeoff.md.
+  (gmlarumbe), chosen by the bake-off recorded in docs/internals/grammar-bakeoff.md.
 * The tree is walked manually with a ``node.type`` dispatch table (the Query
   API churned across py-tree-sitter releases; see ROADMAP Risk #5). Node-type
   names follow the IEEE 1800 BNF and were confirmed with

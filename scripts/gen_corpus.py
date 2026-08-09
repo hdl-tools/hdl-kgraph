@@ -87,7 +87,7 @@ def generate_dense(root: Path, files: int, ports: int = 8) -> int:
     wide ports (denser CONNECTS/PARAMETERIZES), and chains its output into the
     next leaf's input (cross-leaf DRIVES/READS that must be resolved). Used by
     ``scripts/profile_v2.py`` to bound the corpus-sensitivity of the M11
-    scaling curve — see ``docs/v2/m11_profiling.md``.
+    scaling curve — see ``docs/project/v2/m11_profiling.md``.
     """
     root.mkdir(parents=True, exist_ok=True)
     (root / "defs.svh").write_text("`define BENCH_WIDTH 8\n`define BENCH_RESET 1'b0\n")

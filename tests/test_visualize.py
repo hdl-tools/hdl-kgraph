@@ -1,6 +1,6 @@
 """Visualization tests (M5): self-contained HTML output.
 
-Phase 1/2 of the viz-scalability work (docs/viz-scalability.md) adds renderer
+Phase 1/2 of the viz-scalability work (docs/scale/viz-scalability.md) adds renderer
 hygiene and a precomputed-layout tier; the small fixture graphs here stay in
 the unchanged "live" tier, so the original asserts hold by construction.
 """

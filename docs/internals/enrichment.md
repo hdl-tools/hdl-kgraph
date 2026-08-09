@@ -4,7 +4,7 @@ The default build is **syntactic**: tree-sitter sees one `hierarchical_instance`
 per instantiation, so a `generate` loop or an instance array collapses to a
 single `INSTANCE` node, parameter overrides stay unevaluated, and ambiguous
 cross-file names resolve only by heuristic (see the
-[confidence convention](../ROADMAP.md#confidence-convention)).
+[confidence convention](../../ROADMAP.md#confidence-convention)).
 
 *Enrichment* runs a native HDL frontend that genuinely **elaborates** the
 design — resolving parameters, unrolling generates, applying `defparam` — and
@@ -107,10 +107,10 @@ silently skipped otherwise. (`pyVHDLModel` is a document model used by `pyGHDL`,
 not an elaborator on its own.)
 
 The interface lives in
-[`hdl_kgraph/enrich/base.py`](../src/hdl_kgraph/enrich/base.py)
+[`hdl_kgraph/enrich/base.py`](../../src/hdl_kgraph/enrich/base.py)
 (`EnrichmentBackend`, `EnrichmentResult`, `Discrepancy`); the merge plumbing is
 `add_or_upgrade_edge`/`ensure_node` in
-[`graph/builder.py`](../src/hdl_kgraph/graph/builder.py).
+[`graph/builder.py`](../../src/hdl_kgraph/graph/builder.py).
 
 ## Scope (v0.7)
 

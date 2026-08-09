@@ -35,7 +35,7 @@ table); when no such step exists — a gap in the ladder or a change to the
 persisted IR encoding (``ir_codec.IR_CODEC_VERSION``) — they fall back to a
 full rebuild. Read commands stay read-only: ``load()`` still raises
 :class:`SchemaVersionError` on a version mismatch until a writer migrates the
-database. See ``docs/schema-migrations.md``.
+database. See ``docs/internals/schema-migrations.md``.
 """
 
 from __future__ import annotations

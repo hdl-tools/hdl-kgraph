@@ -1,7 +1,7 @@
 # M12 — v2.0 graph-layer spike & decision
 
 > Milestone **M12** of the v2.0 epic ([#128]), following M11
-> ([docs/v2/m11_profiling.md](m11_profiling.md)). M11 pinned the wall: a whole-design
+> ([m11_profiling.md](m11_profiling.md)). M11 pinned the wall: a whole-design
 > scan over the materialised NetworkX graph costs **~2.3× the on-disk DB in RAM**, so a
 > 100 GB design needs ~225 GB and "does not load." M12 asks #128's gate question:
 > *does an off-the-shelf layer hit the RAM target before we commit to a bespoke Rust core?*

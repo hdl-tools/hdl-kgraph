@@ -8,7 +8,7 @@
 > whole NetworkX graph in `SqliteStore.load()`**. The in-memory graph is **~2.3× the
 > on-disk DB**, so load RSS crosses 16 GB at only a **~7 GB on-disk design** and a
 > 100 GB design needs **~225 GB RAM** — it "does not load," exactly as
-> [docs/scalability.md](../scalability.md) diagnosed, now quantified. `load()` is
+> [docs/scale/scalability.md](../../scale/scalability.md) diagnosed, now quantified. `load()` is
 > **graph-CPU-bound (85–90 %)**, not SQLite-I/O-bound (10–15 %); `json.loads` of
 > `attrs` is a minor 11–15 %. **→ Primary M12 path: an out-of-core graph layer that
 > never materialises the whole graph (evaluate `kuzu`; SQL-native whole-design scans
@@ -43,7 +43,7 @@ centres — `build`, the whole-design `summaries`, and `SqliteStore.load()` — 
   for the RSS path.
 
 **Machine:** Linux container, **15 GiB RAM, 4 vCPU**, Python 3.11.15. Wall-clocks run
-~2× the [docs/benchmarks.md](../benchmarks.md) container (e.g. 2 000-file build 3.85 s
+~2× the [docs/scale/benchmarks.md](../../scale/benchmarks.md) container (e.g. 2 000-file build 3.85 s
 here vs 1.94 s there) — a slower box — but graph node/edge counts are **identical**, so
 the harness is faithful and the *scale-invariant* conclusions (bytes/node, the splits,
 the in-memory:on-disk ratio) are machine-independent.
@@ -179,7 +179,7 @@ regime by itself. It is the high-value choice for the **10 GB regime** and compl
 ## Self-consistency / trust checks
 
 - **Baseline parity:** every node/edge count matches the merged build path (e.g.
-  2 000-file light = 14 086 nodes / 32 341 edges, the `docs/benchmarks.md` M5 corpus).
+  2 000-file light = 14 086 nodes / 32 341 edges, the `docs/scale/benchmarks.md` M5 corpus).
 - **Split residual** (I/O + graph-CPU vs total `load()`): ≤ 90 ms across all points
   (≤ 0.6 %).
 - **RSS sampling agreement:** subprocess `ru_maxrss` == live-sampled peak in every row.

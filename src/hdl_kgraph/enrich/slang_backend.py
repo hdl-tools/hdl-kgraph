@@ -160,7 +160,7 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
     # with bare perf_counter accumulators (not ``phase()`` per node, whose
     # context-manager overhead would itself distort a per-instance measurement),
     # then recorded once below. ``inst`` counts instances so the CLI can report
-    # per-instance cost. See docs/benchmarks.md and slang_backend profiling.
+    # per-instance cost. See docs/scale/benchmarks.md and slang_backend profiling.
     walk_members_s = 0.0
     walk_path_s = 0.0
     inst = 0

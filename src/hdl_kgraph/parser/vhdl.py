@@ -3,7 +3,7 @@
 Implementation notes:
 
 * Grammar: ``jpt13653903/tree-sitter-vhdl`` (the PyPI ``tree-sitter-vhdl``
-  package); see docs/grammar-bakeoff.md for the decision and its caveats.
+  package); see docs/internals/grammar-bakeoff.md for the decision and its caveats.
   The tree is walked manually with a ``node.type`` dispatch table, mirroring
   :mod:`hdl_kgraph.parser.systemverilog`; node-type names and subtree shapes
   were confirmed with ``scripts/grammar_bakeoff.py --dump-tree``.

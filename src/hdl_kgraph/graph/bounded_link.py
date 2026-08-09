@@ -7,7 +7,7 @@ prior graph: it reuses the *unchanged* :meth:`_Linker._resolve` but feeds its
 indexes (`definitions`/`children`/`parent`/`node_obj`) lazily from SQLite
 (`idx_nodes_kind_name` / `idx_edges_*`), and decides stub-GC over only the stub
 neighbourhood. The feasibility + byte-identical parity of this approach was
-proven by ``scripts/spike_m13_link.py`` (see ``docs/v2/m13_link_spike.md``); here
+proven by ``scripts/spike_m13_link.py`` (see ``docs/project/v2/m13_link_spike.md``); here
 it is wired to produce the **partial graph** that
 :func:`hdl_kgraph.storage.sqlite_store._apply_delta_scoped` consumes.
 
