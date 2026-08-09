@@ -32,6 +32,16 @@ Everything here is name-level and evidence-scored — no elaboration:
   structure that motivated the analysis. Separating them needs per-instance
   net identity, i.e. elaboration (``build --enrich``); it cannot be done from
   names alone.
+
+  What *can* be done from names alone is noticing it happened, so the gap is
+  visible rather than silent (#176). :func:`alias_collapses` flags a domain
+  whose component rests on a formal port binding nets that no *single-actual*
+  (unaggregated, therefore trustworthy) alias edge connects; the domain is
+  marked ``collapsed`` and the payload reports ``cdc_analysis: "degraded"``,
+  which makes ``cdc_suspect_count`` a lower bound rather than a clean bill of
+  health. Detection is not recovery — the crossings stay invisible.
+  Note "collapsed"/"degraded" is a *net*-level fault, distinct from the
+  "ambiguous" multi-domain *process* skipped just below.
 * **Reset tree.** RESETS edges grouped by alias-root: which nets reset which
   processes, async (1.0, from edge sensitivity) vs name-heuristic (0.4).
 """
@@ -39,12 +49,21 @@ Everything here is name-level and evidence-scored — no elaboration:
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Container, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
 
 from hdl_kgraph.schema import CONFIDENCE_RESOLVED, EdgeKind, NodeKind
+
+
+@dataclass(frozen=True)
+class AliasCollapse:
+    """Nets merged into one domain only because they share a formal port (#176)."""
+
+    formal_id: str  # the shared formal PORT node that bridged them
+    net_ids: tuple[str, ...]  # sorted ids of the conflicting actual nets
 
 
 @dataclass
@@ -56,6 +75,12 @@ class ClockDomain:
     process_ids: list[str] = field(default_factory=list)
     signal_ids: list[str] = field(default_factory=list)  # driven in this domain
     min_confidence: float = 1.0
+    #: True when this domain's alias component was merged through a formal port
+    #: whose instantiations bind nets nothing else in the design connects — the
+    #: name-level artefact of one port node per module (#176). The membership
+    #: counts and every CDC verdict touching this domain are then unreliable.
+    collapsed: bool = False
+    collapse_sites: list[AliasCollapse] = field(default_factory=list)
 
 
 @dataclass
@@ -114,9 +139,15 @@ def _edges(g: nx.MultiDiGraph, *kinds: EdgeKind) -> list[tuple[str, str, dict[st
     return [(u, v, d) for u, v, d in g.edges(data=True) if d["kind"] in wanted]
 
 
-def net_aliases(g: nx.MultiDiGraph) -> _UnionFind:
-    """Union-find merging formal ports with single-identifier actuals."""
-    uf = _UnionFind()
+def alias_pairs(g: nx.MultiDiGraph) -> list[tuple[str, str]]:
+    """``(formal_port_id, actual_id)`` for every single-identifier port binding.
+
+    Split out of :func:`net_aliases` so the pairs stay available to
+    :func:`alias_collapses`, which needs to know *how many distinct actuals*
+    each formal was bound to — information the union-find has already lost.
+    ``storage.summaries._alias_pairs`` is the SQL twin of this function.
+    """
+    pairs: list[tuple[str, str]] = []
     for inst_id, actual, data in _edges(g, EdgeKind.READS, EdgeKind.DRIVES):
         attrs = data["attrs"]
         if attrs.get("derived") != "connects":
@@ -125,13 +156,78 @@ def net_aliases(g: nx.MultiDiGraph) -> _UnionFind:
         actual_name = g.nodes[actual]["name"]
         if expr != actual_name and expr.lower() != actual_name:
             continue  # an expression actual is not a net alias
-        formal = _formal_port(g, inst_id, str(attrs.get("via_port", "")))
-        if formal is not None:
-            uf.union(formal, actual)
+        for formal in _formal_ports(g, inst_id, str(attrs.get("via_port", ""))):
+            pairs.append((formal, actual))
+    return pairs
+
+
+def alias_uf(pairs: Iterable[tuple[str, str]]) -> _UnionFind:
+    """Union-find over alias pairs; shared verbatim with the SQL path."""
+    uf = _UnionFind()
+    for formal, actual in pairs:
+        uf.union(formal, actual)
     return uf
 
 
-def _formal_port(g: nx.MultiDiGraph, inst_id: str, port_name: str) -> str | None:
+def net_aliases(g: nx.MultiDiGraph) -> _UnionFind:
+    """Union-find merging formal ports with single-identifier actuals."""
+    return alias_uf(alias_pairs(g))
+
+
+def alias_collapses(
+    pairs: Iterable[tuple[str, str]],
+    uf: _UnionFind,
+    domain_roots: Container[str],
+) -> dict[str, list[AliasCollapse]]:
+    """Alias-roots merged *only* through a shared formal port (#176).
+
+    A formal port has one node per module, shared by every instantiation, so
+    binding it to different actuals unions those actuals transitively with each
+    other. That merge is *corroborated* when the actuals are also joined by
+    single-actual alias edges — a formal bound to exactly one net aggregated
+    nothing, so it is trustworthy evidence. When they are not, the only thing
+    claiming those nets are one net is the shared formal, and the merge is a
+    name-level artefact.
+
+    Note a cut-vertex test does **not** work here: the motivating shape is a
+    module instantiated twice with the clock actuals *swapped*, whose two clock
+    formals and two actuals form a 4-cycle, so neither formal disconnects the
+    actuals when removed.
+
+    Restricted to roots in *domain_roots*: every data port of a multiply
+    instantiated leaf is also a multi-actual formal, and none of those matter.
+    """
+    by_formal: dict[str, set[str]] = defaultdict(set)
+    for formal, actual in pairs:
+        by_formal[formal].add(actual)
+    # Corroborating evidence: only the formals that aggregated nothing.
+    corroborated = alias_uf(
+        (formal, next(iter(actuals))) for formal, actuals in by_formal.items() if len(actuals) == 1
+    )
+    out: dict[str, list[AliasCollapse]] = defaultdict(list)
+    for formal, actuals in sorted(by_formal.items()):
+        if len(actuals) < 2:
+            continue
+        root = uf.find(formal)
+        if root not in domain_roots:
+            continue
+        if len({corroborated.find(a) for a in actuals}) < 2:
+            continue  # joined by unaggregated evidence too: a real net
+        out[root].append(AliasCollapse(formal_id=formal, net_ids=tuple(sorted(actuals))))
+    return dict(out)
+
+
+def _formal_ports(g: nx.MultiDiGraph, inst_id: str, port_name: str) -> list[str]:
+    """Every formal PORT named *port_name* on a module *inst_id* instantiates.
+
+    Normally one. An instance whose module name has two candidate definitions
+    resolves to several, and *all* of them are returned — the SQL twin's join
+    (``storage.summaries._alias_pairs``) already yields every match, and the
+    parity test pins the two paths equal. Aliasing through both candidates is
+    also the conservative reading: it merges more, so #176's collapse detector
+    sees the ambiguity rather than silently picking one definition.
+    """
+    formals: list[str] = []
     for _, target, d in g.out_edges(inst_id, data=True):
         if d["kind"] is not EdgeKind.INSTANTIATES:
             continue
@@ -141,8 +237,8 @@ def _formal_port(g: nx.MultiDiGraph, inst_id: str, port_name: str) -> str | None
                 and g.nodes[child]["kind"] is NodeKind.PORT
                 and g.nodes[child]["name"] == port_name
             ):
-                return child
-    return None
+                formals.append(child)
+    return formals
 
 
 def _clock_net_roots(g: nx.MultiDiGraph, uf: _UnionFind) -> dict[str, set[str]]:
@@ -236,8 +332,14 @@ def _declared_safe_crossings(
 
 
 def clock_domains(g: nx.MultiDiGraph) -> list[ClockDomain]:
-    """Every clock domain: nets named by CLOCKED_BY edges, alias-merged."""
-    uf = net_aliases(g)
+    """Every clock domain: nets named by CLOCKED_BY edges, alias-merged.
+
+    A domain whose alias component rests on a shared formal port is flagged
+    ``collapsed`` (#176): it merges nets that are distinct in silicon, so its
+    counts are wrong and crossings through it are invisible.
+    """
+    pairs = alias_pairs(g)
+    uf = alias_uf(pairs)
     domains: dict[str, ClockDomain] = {}
     names: dict[str, set[str]] = {}
     for src, clock, data in _edges(g, EdgeKind.CLOCKED_BY):
@@ -247,6 +349,10 @@ def clock_domains(g: nx.MultiDiGraph) -> list[ClockDomain]:
         if src not in domain.process_ids:
             domain.process_ids.append(src)
         domain.min_confidence = min(domain.min_confidence, data["confidence"])
+    collapses = alias_collapses(pairs, uf, set(domains))
+    for root, sites in collapses.items():
+        domains[root].collapsed = True
+        domains[root].collapse_sites = sites
     for domain in domains.values():
         domain.clock_names = sorted(names[domain.clock_id])
         driven: set[str] = set()

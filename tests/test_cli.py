@@ -166,7 +166,15 @@ def test_query_clock_domains_json_is_bounded_payload(project: Path) -> None:
         "cdc_suspects",
         "cdc_suppressed_count",
         "cdc_suppressed",
+        # Whether multi-instance clock aliasing collapsed any domain, so a zero
+        # suspect count cannot be misread as a clean bill of health (#176).
+        "cdc_analysis",
+        "alias_collapses",
     }
+    # The project fixture copies the whole corpus, which includes the #176
+    # repro (multi_instance_clock.sv), so the whole-design verdict is degraded.
+    assert payload["cdc_analysis"] == "degraded"
+    assert any(c["nets"] for c in payload["alias_collapses"])
     assert payload["domains"]
     for domain in payload["domains"]:
         assert set(domain) == {
@@ -179,6 +187,7 @@ def test_query_clock_domains_json_is_bounded_payload(project: Path) -> None:
             "process_count",
             "signal_count",
             "min_confidence",
+            "collapsed",
         }
     assert payload == GraphQuery(default_db_path(project)).clock_domains()
 
@@ -188,6 +197,37 @@ def test_query_cdc_finds_the_planted_crossing(project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "data_a" in result.output
     assert "clk_a ->" in result.output
+
+
+def test_query_cdc_refuses_instead_of_reporting_clean(tmp_path: Path, fixtures_dir: Path) -> None:
+    """On a collapsed design `query cdc` must not print a clean bill of health.
+
+    The suspect list is empty because the analysis cannot see the crossings,
+    not because the design has none (#176) — and the two must not read alike.
+    """
+    shutil.copy(fixtures_dir / "multi_instance_clock.sv", tmp_path / "multi_instance_clock.sv")
+    assert CliRunner().invoke(main, ["build", str(tmp_path)]).exit_code == 0
+
+    result = CliRunner().invoke(main, ["query", "cdc", *db_args(tmp_path)])
+
+    assert result.exit_code == 0, result.output  # a report, not a gate
+    assert "no CDC suspects found" not in result.output
+    assert "COLLAPSED" in result.output
+    assert "lower bound" in result.output
+
+
+def test_query_clock_domains_marks_the_collapsed_domain(tmp_path: Path, fixtures_dir: Path) -> None:
+    shutil.copy(fixtures_dir / "multi_instance_clock.sv", tmp_path / "multi_instance_clock.sv")
+    assert CliRunner().invoke(main, ["build", str(tmp_path)]).exit_code == 0
+
+    result = CliRunner().invoke(main, ["query", "clock-domains", *db_args(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "[collapsed]" in result.output
+    # Qualified, so the nets are identifiable: the domain header shows only the
+    # callee's formal names, which match no clock net in the design.
+    assert "async_axi_fifo.s_clk_i" in result.output
+    assert "cdc_gray_fifo.wr_clk_i" in result.output
 
 
 def test_query_cdc_json(project: Path) -> None:

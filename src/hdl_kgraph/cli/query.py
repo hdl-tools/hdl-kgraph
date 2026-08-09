@@ -88,6 +88,30 @@ def modules(db_path: Path | None, as_json: bool) -> None:
         )
 
 
+def _cdc_degraded_warning(payload: dict) -> str:
+    """The banner for a clock report the aliasing collapsed, else ``""`` (#176).
+
+    A missing ``cdc_analysis`` means a summary persisted before the field
+    existed; say so rather than defaulting to "complete", which would be the
+    very false reassurance this warning exists to prevent.
+    """
+    analysis = payload.get("cdc_analysis")
+    if analysis is None:
+        return (
+            "warning: this database predates the clock-collapse check; "
+            "run `hdl-kgraph build` to refresh it before trusting the CDC result."
+        )
+    if analysis != "degraded":
+        return ""
+    collapsed = sum(1 for d in payload.get("domains", []) if d.get("collapsed"))
+    return (
+        f"warning: {collapsed} clock domain(s) COLLAPSED — a module instantiated on more "
+        "than one clock shares a single node per formal port, so distinct nets were merged. "
+        "Crossings through those domains are invisible: the suspect count below is a lower "
+        "bound, NOT a clean bill of health. See `query clock-domains`."
+    )
+
+
 @query.command("clock-domains")
 @_db_option
 @_json_option
@@ -112,6 +136,9 @@ def clock_domains_cmd(db_path: Path | None, as_json: bool) -> None:
     if not domains:
         click.echo("no clocked processes found")
         return
+    warning = _cdc_degraded_warning(payload)
+    if warning:
+        click.echo(warning)
     for domain in domains:
         label = domain["clock"]
         aliases = [n for n in domain["aliases"] if n != domain["clock"]]
@@ -119,9 +146,22 @@ def clock_domains_cmd(db_path: Path | None, as_json: bool) -> None:
             label += " (= " + ", ".join(aliases) + ")"
         confidence = domain["min_confidence"]
         marker = "" if confidence >= 0.8 else f"  [~{confidence:.1f}]"
+        if domain.get("collapsed"):
+            marker += "  [collapsed]"
         click.echo(f"{label}{marker}")
         click.echo(f"    processes: {domain['process_count']}")
         click.echo(f"    signals driven: {domain['signal_count']}")
+    # The evidence goes in one trailing block, not under each domain: several
+    # unrelated domains routinely share a representative name (`clk`), so a
+    # per-domain lookup keyed on that name would attach the same ports to all
+    # of them. These are the sites to review in the RTL.
+    collapses = payload.get("alias_collapses", [])
+    if collapses:
+        click.echo("\ncollapsed aliasing — each port below merged distinct nets:")
+        for collapse in collapses:
+            # Qualified names: a collapsed domain's aliases are the *callee's*
+            # formal port names, which match none of the design's own nets.
+            click.echo(f"    {collapse['port']}  binds  " + ", ".join(collapse["nets"]))
 
 
 @query.command("reset-tree")
@@ -175,15 +215,23 @@ def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
     """
     query = _query(db_path)
     try:
-        suspects = query.clock_domains()["cdc_suspects"]
+        payload = query.clock_domains()
     except SchemaVersionError as exc:
         raise CliError(str(exc)) from exc
+    suspects = payload["cdc_suspects"]
     if as_json:
+        # Bare suspect list: the caller asked for the crossings, and the
+        # degraded verdict lives in `query clock-domains --json`.
         _emit_json(suspects)
         return
+    warning = _cdc_degraded_warning(payload)
     if not suspects:
-        click.echo("no CDC suspects found")
+        # Never "no CDC suspects found" on a degraded result: that reads as a
+        # clean bill of health for a design the analysis could not see (#176).
+        click.echo(warning or "no CDC suspects found")
         return
+    if warning:
+        click.echo(warning)
     readers = query.qualified_names([s["reader_id"] for s in suspects])
     for s in suspects:
         location = f"{s['file']}:{s['line']}" if s["file"] else "?"

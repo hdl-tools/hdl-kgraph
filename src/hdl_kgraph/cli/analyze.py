@@ -419,6 +419,9 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
     )
     if a["cdc"].get("suppressed_count"):
         cdc_line += f" ({a['cdc']['suppressed_count']} SDC-suppressed)"
+    if a["cdc"].get("analysis") == "degraded":
+        # The count above is a lower bound: collapsed domains hide crossings.
+        cdc_line += f"  [DEGRADED: {a['cdc']['collapsed_domain_count']} collapsed domain(s)]"
     click.echo(cdc_line)
     if a.get("power", {}).get("domain_count"):
         p = a["power"]

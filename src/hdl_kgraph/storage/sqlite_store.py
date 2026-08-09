@@ -60,7 +60,7 @@ from hdl_kgraph.graph.builder import RefRecord
 from hdl_kgraph.schema import Edge, EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.ir_codec import IR_CODEC_VERSION
 
-SCHEMA_VERSION = "8"  # v8: summaries table (precomputed whole-design reports)
+SCHEMA_VERSION = "9"  # v9: clock summary carries cdc_analysis/alias_collapses (#176)
 
 # How long a reader waits on a residual write lock before giving up.
 _BUSY_TIMEOUT_MS = 5_000
@@ -172,11 +172,28 @@ def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_8_to_9(conn: sqlite3.Connection) -> None:
+    """v8 -> v9: drop the stale ``clock_domains`` summary (#176).
+
+    A v8 payload predates ``cdc_analysis``/``alias_collapses``, and a reader
+    that defaults a missing status would report a *collapsed* design as
+    ``complete`` — the exact false clean bill this release exists to remove.
+    Deleting the row makes ``load_summary`` return ``None``, so the reader falls
+    through to the out-of-core ``clock_summary_sql``, which computes the new
+    fields. No rebuild needed; the next build/update repopulates the row.
+
+    Uses a single ``execute`` (not ``executescript``, which would implicitly
+    commit the caller's migration transaction).
+    """
+    conn.execute("DELETE FROM summaries WHERE name = 'clock_domains'")
+
+
 #: from_version -> (to_version, upgrade function). A contiguous chain up to
 #: ``SCHEMA_VERSION`` is run in order; a gap (or an IR-codec change) routes to a
 #: full rebuild instead.
 _MIGRATIONS: dict[str, tuple[str, MigrationFn]] = {
     "7": ("8", _migrate_7_to_8),
+    "8": ("9", _migrate_8_to_9),
 }
 
 

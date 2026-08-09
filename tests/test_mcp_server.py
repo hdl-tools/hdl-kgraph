@@ -141,6 +141,13 @@ def test_clock_domains_tool(server: Any) -> None:
     result = _call(server, "clock_domains")
     assert len(result["domains"]) >= 2  # two_clock_cdc.sv
     assert result["cdc_suspect_count"] >= 1
+    # The agent must be able to tell a real zero from an unanalysable one (#176).
+    # The fixture corpus includes multi_instance_clock.sv, so this one is
+    # degraded — and says so, with the offending port and nets named.
+    assert result["cdc_analysis"] == "degraded"
+    assert result["alias_collapses"]
+    assert any(d["collapsed"] for d in result["domains"])
+    assert any(not d["collapsed"] for d in result["domains"])  # per-domain, not global
 
 
 def test_uvm_topology_tool(server: Any) -> None:

@@ -160,10 +160,15 @@ def _tree_to_dict(node: HierarchyNode) -> dict[str, Any]:
 
 
 def _domain_map(g: nx.MultiDiGraph) -> dict[str, str]:
-    """node id -> representative clock name, for domain coloring."""
+    """node id -> representative clock name, for domain coloring.
+
+    A collapsed domain (#176) is prefixed ``~``: its members are several
+    distinct clocks that name-level aliasing merged, so painting them one
+    colour would render an over-merged design as a tidy one.
+    """
     domains: dict[str, str] = {}
     for domain in clocks.clock_domains(g):
-        label = domain.clock_names[0]
+        label = f"~{domain.clock_names[0]}" if domain.collapsed else domain.clock_names[0]
         for node_id in (*domain.process_ids, *domain.signal_ids, domain.clock_id):
             domains[node_id] = label
     return domains

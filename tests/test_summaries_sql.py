@@ -30,6 +30,16 @@ _FIXTURE_SETS = [
     ["two_clock_cdc.sv"],
     ["dataflow.sv"],
     ["two_clock_cdc.sv", "dataflow.sv", "dataflow.vhd"],
+    # #176: a module instantiated on two clocks (collapse) and one instantiated
+    # under two parents off a single clock (corroborated, must stay silent).
+    ["multi_instance_clock.sv"],
+    ["shared_leaf_clock.sv"],
+    # An instance with two candidate module definitions: the oracle's
+    # ``_formal_port`` takes the first match while the SQL join takes both, so
+    # this pins that the collapse verdict does not diverge on ambiguity.
+    ["uses_dup.sv", "dup_leaf_a.sv", "dup_leaf_b.sv"],
+    ["dup_clk_top.sv", "dup_clk_leaf_a.sv", "dup_clk_leaf_b.sv"],
+    ["multi_instance_clock.sv", "shared_leaf_clock.sv", "two_clock_cdc.sv"],
 ]
 
 
@@ -50,6 +60,36 @@ def test_sql_clock_summary_matches_oracle(
     with SqliteStore(db)._connect() as conn:
         sql = clock_summary_sql(conn)
     assert sql == oracle  # byte-identical: domains, cdc_suspect_count, cdc_suspects
+
+
+def test_sql_reports_the_degraded_analysis(tmp_path: Path, fixtures_dir: Path) -> None:
+    """The bounded SQL path must carry the #176 verdict, not just the oracle.
+
+    ``pipeline._refresh_summaries_and_counts_from_db`` rewrites the stored
+    summary from this function after every bounded ``update``; if it omitted
+    the field, an update would silently downgrade a degraded payload to one
+    that reads as complete.
+    """
+    db = _build(tmp_path, fixtures_dir, ["multi_instance_clock.sv"])
+    with SqliteStore(db)._connect() as conn:
+        payload = clock_summary_sql(conn)
+
+    assert payload["cdc_analysis"] == "degraded"
+    assert payload["cdc_suspect_count"] == 0  # the false zero, now labelled
+    assert [d["collapsed"] for d in payload["domains"]] == [True]
+    ports = {c["port"] for c in payload["alias_collapses"]}
+    assert ports == {"cdc_gray_fifo.wr_clk_i", "cdc_gray_fifo.rd_clk_i"}
+    for collapse in payload["alias_collapses"]:
+        assert set(collapse["nets"]) == {"async_axi_fifo.s_clk_i", "async_axi_fifo.m_clk_i"}
+
+
+def test_sql_reports_complete_on_ordinary_hierarchy(tmp_path: Path, fixtures_dir: Path) -> None:
+    db = _build(tmp_path, fixtures_dir, ["two_clock_cdc.sv"])
+    with SqliteStore(db)._connect() as conn:
+        payload = clock_summary_sql(conn)
+
+    assert payload["cdc_analysis"] == "complete"
+    assert payload["alias_collapses"] == []
 
 
 @pytest.mark.parametrize("names", _FIXTURE_SETS, ids=lambda n: "+".join(n))

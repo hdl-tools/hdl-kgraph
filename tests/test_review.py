@@ -59,6 +59,10 @@ def test_review_schema_and_counts(tmp_path: Path, fixtures_dir: Path) -> None:
     # the two-clock fixture: 2 domains, 1 CDC crossing
     assert digest["analyses"]["clock_domains"]["count"] == 2
     assert digest["analyses"]["cdc"]["suspect_count"] == 1
+    # Whether that count can be trusted — a string and an int, so the digest
+    # stays content-free (#176).
+    assert digest["analyses"]["cdc"]["analysis"] == "complete"
+    assert digest["analyses"]["cdc"]["collapsed_domain_count"] == 0
     assert digest["analyses"]["metrics"]["module_count"] >= 2  # --metrics path
     assert digest["meta"]["tool_version"]
     assert "root" not in digest["meta"]  # filesystem path deliberately omitted

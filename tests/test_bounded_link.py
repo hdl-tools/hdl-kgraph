@@ -57,6 +57,29 @@ def test_bounded_update_sets_flag_and_matches_full(tmp_path: Path, fixtures_dir:
     assert len(json.loads(bounded_clock)["domains"]) == 2
 
 
+def test_bounded_update_preserves_the_degraded_verdict(tmp_path: Path, fixtures_dir: Path) -> None:
+    """A bounded update rewrites the summary from SQL, so it must keep #176's
+    verdict. If the SQL path lacked the field, an update would silently replace
+    a degraded payload with one whose missing status reads as complete —
+    strictly worse than before the fix.
+    """
+    (tmp_path / "multi_instance_clock.sv").write_text(
+        (fixtures_dir / "multi_instance_clock.sv").read_text()
+    )
+    (tmp_path / "extra.sv").write_text(
+        "module extra(input logic a, output logic y);\n  assign y = a;\nendmodule\n"
+    )
+    run_build(tmp_path)
+    (tmp_path / "extra.sv").write_text((tmp_path / "extra.sv").read_text() + "// touch\n")
+
+    report = run_update(tmp_path, options=BuildOptions(bounded_link=True))
+    assert report.build is not None and report.build.bounded_link is True
+
+    payload = json.loads(SqliteStore(default_db_path(tmp_path)).load_summary("clock_domains"))
+    assert payload["cdc_analysis"] == "degraded"
+    assert payload["alias_collapses"]
+
+
 def test_cli_update_bounded_link(tmp_path: Path, fixtures_dir: Path) -> None:
     root = _project(tmp_path, fixtures_dir)
     (root / "extra.sv").write_text((root / "extra.sv").read_text() + "// touch\n")

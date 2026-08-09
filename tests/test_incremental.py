@@ -9,7 +9,7 @@ from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.incremental import ChangeSet, detect_git_changes, diff_hashes
 from hdl_kgraph.pipeline import run_build, run_update, scan_changes
 from hdl_kgraph.schema import EdgeKind
-from hdl_kgraph.storage.sqlite_store import SqliteStore
+from hdl_kgraph.storage.sqlite_store import SCHEMA_VERSION, SqliteStore
 
 
 @pytest.fixture
@@ -458,7 +458,8 @@ def test_old_schema_migrates_in_place_instead_of_rebuilding(project: Path) -> No
     assert report.full_rebuild_reason is None  # migrated, not rebuilt
     assert report.reparsed == {"mid.sv": "changed"}
     _, _, meta = SqliteStore(db).load()
-    assert meta["schema_version"] == "8"
+    # The whole contiguous ladder runs (v7 -> v8 -> v9), not just one step.
+    assert meta["schema_version"] == SCHEMA_VERSION
 
 
 def test_forced_full_rebuild(project: Path) -> None:
