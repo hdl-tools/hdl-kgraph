@@ -86,9 +86,9 @@ all = ["hdl-kgraph[watch,mcp,layout,enrich,bench]"]
 hdl-kgraph = "hdl_kgraph.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/chuanseng-ng/hdl-kgraph"
-Issues = "https://github.com/chuanseng-ng/hdl-kgraph/issues"
-Roadmap = "https://github.com/chuanseng-ng/hdl-kgraph/blob/main/ROADMAP.md"
+Homepage = "https://github.com/hdl-tools/hdl-kgraph"
+Issues = "https://github.com/hdl-tools/hdl-kgraph/issues"
+Roadmap = "https://github.com/hdl-tools/hdl-kgraph/blob/main/ROADMAP.md"
 
 [tool.hatch.version]
 path = "src/hdl_kgraph/__init__.py"

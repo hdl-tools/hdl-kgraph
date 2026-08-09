@@ -438,7 +438,7 @@ the critical path for the RAM goal.
 - [ ] **M14 — native tree-sitter walk → `FileIR` (optional):** remove per-node FFI
       from the parse hot path.
 
-[#128]: https://github.com/chuanseng-ng/hdl-kgraph/issues/128
+[#128]: https://github.com/hdl-tools/hdl-kgraph/issues/128
 
 ---
 

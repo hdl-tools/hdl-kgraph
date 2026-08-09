@@ -16,7 +16,7 @@
 > lowers the per-node constant and attacks the graph-CPU term, buying headroom for the
 > ~10 GB regime, but stays in-memory and so cannot reach 100 GB alone.
 
-[#128]: https://github.com/chuanseng-ng/hdl-kgraph/issues/128
+[#128]: https://github.com/hdl-tools/hdl-kgraph/issues/128
 
 ## Method
 

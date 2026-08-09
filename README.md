@@ -1,6 +1,6 @@
 # hdl-kgraph
 
-[![CI](https://github.com/chuanseng-ng/hdl-kgraph/actions/workflows/ci.yml/badge.svg)](https://github.com/chuanseng-ng/hdl-kgraph/actions/workflows/ci.yml)
+[![CI](https://github.com/hdl-tools/hdl-kgraph/actions/workflows/ci.yml/badge.svg)](https://github.com/hdl-tools/hdl-kgraph/actions/workflows/ci.yml)
 
 **A knowledge graph for your HDL design.** hdl-kgraph parses SystemVerilog,
 Verilog, and VHDL into a local SQLite graph of modules, instances, ports,
@@ -144,7 +144,7 @@ Details and acceptance criteria: [ROADMAP.md](ROADMAP.md).
 ## Development
 
 ```bash
-git clone https://github.com/chuanseng-ng/hdl-kgraph
+git clone https://github.com/hdl-tools/hdl-kgraph
 cd hdl-kgraph
 pip install -e .[dev]
 ruff check . && ruff format --check . && mypy && pytest

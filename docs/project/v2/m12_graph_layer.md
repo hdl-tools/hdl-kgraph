@@ -16,7 +16,7 @@
 > where richer graph queries (variable-length traversal) are wanted; **`rustworkx`** is
 > the in-memory runner-up for the ~10 GB regime.
 
-[#128]: https://github.com/chuanseng-ng/hdl-kgraph/issues/128
+[#128]: https://github.com/hdl-tools/hdl-kgraph/issues/128
 
 ## Method
 

@@ -88,7 +88,7 @@ INSTRUCTIONS_BODY = """\
 ## Querying the hdl-kgraph design graph
 
 This repository has a knowledge graph of its HDL design (SystemVerilog / Verilog
-/ VHDL) built by [hdl-kgraph](https://github.com/chuanseng-ng/hdl-kgraph). For
+/ VHDL) built by [hdl-kgraph](https://github.com/hdl-tools/hdl-kgraph). For
 structural questions about the design — module hierarchy, where a unit is
 instantiated, what drives a signal, clock domains, the impact of a change —
 **query the graph instead of grepping the raw RTL**: it resolves cross-file

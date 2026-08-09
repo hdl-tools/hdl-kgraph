@@ -6,7 +6,7 @@ Thanks for your interest! The project is stable (v1.0) — see
 ## Dev setup
 
 ```bash
-git clone https://github.com/chuanseng-ng/hdl-kgraph
+git clone https://github.com/hdl-tools/hdl-kgraph
 cd hdl-kgraph
 pip install -e .[dev]
 ```
