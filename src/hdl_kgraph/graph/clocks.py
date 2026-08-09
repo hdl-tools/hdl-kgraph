@@ -92,6 +92,10 @@ class ResetGroup:
     is_async: bool  # any 1.0-evidence async sensitivity term
     process_ids: list[str] = field(default_factory=list)
     min_confidence: float = 1.0
+    #: Appended last so the field order the payload's key order mirrors stays
+    #: stable. Same fault as :attr:`ClockDomain.collapsed` (#176): this group
+    #: merges reset nets only a shared formal port connects.
+    collapsed: bool = False
 
 
 @dataclass
@@ -368,8 +372,17 @@ def clock_domains(g: nx.MultiDiGraph) -> list[ClockDomain]:
 
 
 def reset_tree(g: nx.MultiDiGraph) -> list[ResetGroup]:
-    """RESETS edges grouped by canonical reset net."""
-    uf = net_aliases(g)
+    """RESETS edges grouped by canonical reset net.
+
+    Reset nets alias through the same shared formal ports as clocks, so a
+    module instantiated on two different resets over-merges its groups exactly
+    as #176 describes; such a group is flagged ``collapsed``. The harm is
+    smaller than for CDC — an over-merged group is visibly wrong, whereas a
+    zero crossing count reads as a clean design — but the two reports should
+    not disagree about whether the aliasing can be trusted.
+    """
+    pairs = alias_pairs(g)
+    uf = alias_uf(pairs)
     groups: dict[str, ResetGroup] = {}
     names: dict[str, set[str]] = {}
     for src, reset, data in _edges(g, EdgeKind.RESETS):
@@ -380,6 +393,8 @@ def reset_tree(g: nx.MultiDiGraph) -> list[ResetGroup]:
             group.process_ids.append(src)
         group.is_async = group.is_async or bool(data["attrs"].get("is_async"))
         group.min_confidence = min(group.min_confidence, data["confidence"])
+    for root in alias_collapses(pairs, uf, set(groups)):
+        groups[root].collapsed = True
     for group in groups.values():
         group.reset_names = sorted(names[group.reset_id])
         group.process_ids.sort()

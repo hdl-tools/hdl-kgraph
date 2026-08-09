@@ -374,7 +374,9 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     union-find). Bounded: scans only RESETS edges + the alias pairs, never the
     whole graph. Keys match ``ResetGroup`` field order so the CLI ``--json`` is
     identical to the dataclass path."""
-    find = _alias_uf(conn).find
+    pairs = _alias_pairs(conn)
+    uf = clocks.alias_uf(pairs)
+    find = uf.find
     names: dict[str, set[str]] = defaultdict(set)
     process_ids: dict[str, list[str]] = defaultdict(list)
     is_async: dict[str, bool] = defaultdict(bool)
@@ -390,6 +392,7 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             process_ids[root].append(src)
         is_async[root] = is_async[root] or bool(async_flag)
         min_conf[root] = min(min_conf[root], conf)
+    collapsed = clocks.alias_collapses(pairs, uf, set(names))
     groups: list[dict[str, Any]] = [
         {
             "reset_id": root,
@@ -397,6 +400,7 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "is_async": is_async[root],
             "process_ids": sorted(process_ids[root]),
             "min_confidence": min_conf[root],
+            "collapsed": root in collapsed,
         }
         for root, nameset in names.items()
     ]

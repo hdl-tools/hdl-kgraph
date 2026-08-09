@@ -195,6 +195,10 @@ def reset_tree_cmd(db_path: Path | None, as_json: bool) -> None:
         flavor = "async" if group["is_async"] else "sync (name heuristic)"
         conf = group["min_confidence"]
         marker = "" if conf >= 0.8 else f"  [~{conf:.1f}]"
+        if group.get("collapsed"):
+            # Same aliasing fault as the clock report: this group merges reset
+            # nets that only a shared formal port connects (#176).
+            marker += "  [collapsed]"
         click.echo(f"{label}  {flavor}{marker}")
         for proc in group["process_ids"]:
             click.echo(f"    resets {proc_names.get(proc, proc)}")

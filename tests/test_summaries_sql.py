@@ -39,6 +39,7 @@ _FIXTURE_SETS = [
     # this pins that the collapse verdict does not diverge on ambiguity.
     ["uses_dup.sv", "dup_leaf_a.sv", "dup_leaf_b.sv"],
     ["dup_clk_top.sv", "dup_clk_leaf_a.sv", "dup_clk_leaf_b.sv"],
+    ["multi_instance_reset.sv"],
     ["multi_instance_clock.sv", "shared_leaf_clock.sv", "two_clock_cdc.sv"],
 ]
 

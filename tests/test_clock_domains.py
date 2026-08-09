@@ -147,6 +147,24 @@ def test_ordinary_hierarchy_is_not_flagged(graph) -> None:
     assert not any(d.collapsed for d in clocks.clock_domains(graph))
 
 
+def test_reset_groups_collapse_the_same_way(fixtures_dir: Path) -> None:
+    """Resets alias through the same shared formals, so they collapse too.
+
+    The clock in this fixture is bound to the same actual by both instances,
+    so it must stay unflagged — the marking is per net, not per module.
+    """
+    g = _sv_graph(fixtures_dir, "multi_instance_reset.sv")
+
+    (group,) = clocks.reset_tree(g)
+    assert group.reset_names == ["a_rst_n_i", "b_rst_n_i"]
+    assert group.collapsed is True
+    assert [d.collapsed for d in clocks.clock_domains(g)] == [False]
+
+
+def test_ordinary_reset_tree_is_not_flagged(graph) -> None:
+    assert not any(r.collapsed for r in clocks.reset_tree(graph))
+
+
 def test_alias_collapses_detects_the_swapped_binding_cycle() -> None:
     """Swapped bindings make the formals and actuals a 4-cycle (K2,2).
 
